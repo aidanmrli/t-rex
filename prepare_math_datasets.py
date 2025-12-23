@@ -36,18 +36,25 @@ def format_example(question, solution):
         "label": answer
     }
 
-def process_and_save(dataset_name, subset_name, split, output_path, question_key, solution_key):
-    print(f"Processing {dataset_name} ({subset_name if subset_name else ''}) {split}...")
+def process_and_save(dataset_name, subset_names, split, output_path, question_key, solution_key):
+    if subset_names is None:
+        subset_names = [None]
+    elif isinstance(subset_names, str):
+        subset_names = [subset_names]
+        
+    print(f"Processing {dataset_name} {split}...")
     try:
-        if subset_name:
-            ds = load_dataset(dataset_name, subset_name, split=split)
-        else:
-            ds = load_dataset(dataset_name, split=split)
-            
         with open(output_path, "w") as f:
-            for ex in tqdm(ds):
-                formatted = format_example(ex[question_key], ex[solution_key])
-                f.write(json.dumps(formatted) + "\n")
+            for subset in subset_names:
+                if subset:
+                    print(f"  - Loading subset: {subset}")
+                    ds = load_dataset(dataset_name, subset, split=split)
+                else:
+                    ds = load_dataset(dataset_name, split=split)
+                    
+                for ex in tqdm(ds, desc=f"Subset {subset}" if subset else "Dataset"):
+                    formatted = format_example(ex[question_key], ex[solution_key])
+                    f.write(json.dumps(formatted) + "\n")
     except Exception as e:
         print(f"Error processing {dataset_name}: {e}")
 
@@ -62,12 +69,13 @@ def main():
     process_and_save("madrylab/gsm8k-platinum", None, "test", "data/gsm8k_platinum_test.jsonl", "question", "answer")
     
     # 3. MATH (EleutherAI/hendrycks_math)
-    process_and_save("EleutherAI/hendrycks_math", None, "train", "data/math_train.jsonl", "problem", "solution")
-    process_and_save("EleutherAI/hendrycks_math", None, "test", "data/math_test.jsonl", "problem", "solution")
+    math_subsets = ['algebra', 'counting_and_probability', 'geometry', 'intermediate_algebra', 'number_theory', 'prealgebra', 'precalculus']
+    process_and_save("EleutherAI/hendrycks_math", math_subsets, "train", "data/math_train.jsonl", "problem", "solution")
+    process_and_save("EleutherAI/hendrycks_math", math_subsets, "test", "data/math_test.jsonl", "problem", "solution")
 
     print("\nDone! All datasets processed and saved to ./data/")
     print("Files created:")
-    for f in os.listdir("data"):
+    for f in sorted(os.listdir("data")):
         if f.endswith(".jsonl"):
             print(f" - data/{f}")
 
