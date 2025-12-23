@@ -59,25 +59,26 @@ def process_and_save(dataset_name, subset_names, split, output_path, question_ke
         print(f"Error processing {dataset_name}: {e}")
 
 def main():
-    os.makedirs("data", exist_ok=True)
+    data_dir = "trex/data"
+    os.makedirs(data_dir, exist_ok=True)
     
     # 1. GSM8K (openai/gsm8k)
-    process_and_save("openai/gsm8k", "main", "train", "data/gsm8k_train.jsonl", "question", "answer")
-    process_and_save("openai/gsm8k", "main", "test", "data/gsm8k_test.jsonl", "question", "answer")
+    process_and_save("openai/gsm8k", "main", "train", os.path.join(data_dir, "gsm8k_train.jsonl"), "question", "answer")
+    process_and_save("openai/gsm8k", "main", "test", os.path.join(data_dir, "gsm8k_test.jsonl"), "question", "answer")
     
     # 2. GSM8K Platinum (madrylab/gsm8k-platinum) - Test only
-    process_and_save("madrylab/gsm8k-platinum", None, "test", "data/gsm8k_platinum_test.jsonl", "question", "answer")
+    process_and_save("madrylab/gsm8k-platinum", None, "test", os.path.join(data_dir, "gsm8k_platinum_test.jsonl"), "question", "answer")
     
     # 3. MATH (EleutherAI/hendrycks_math)
     math_subsets = ['algebra', 'counting_and_probability', 'geometry', 'intermediate_algebra', 'number_theory', 'prealgebra', 'precalculus']
-    process_and_save("EleutherAI/hendrycks_math", math_subsets, "train", "data/math_train.jsonl", "problem", "solution")
-    process_and_save("EleutherAI/hendrycks_math", math_subsets, "test", "data/math_test.jsonl", "problem", "solution")
+    process_and_save("EleutherAI/hendrycks_math", math_subsets, "train", os.path.join(data_dir, "math_train.jsonl"), "problem", "solution")
+    process_and_save("EleutherAI/hendrycks_math", math_subsets, "test", os.path.join(data_dir, "math_test.jsonl"), "problem", "solution")
 
-    print("\nDone! All datasets processed and saved to ./data/")
+    print(f"\nDone! All datasets processed and saved to {data_dir}/")
     print("Files created:")
-    for f in sorted(os.listdir("data")):
+    for f in sorted(os.listdir(data_dir)):
         if f.endswith(".jsonl"):
-            print(f" - data/{f}")
+            print(f" - {os.path.join(data_dir, f)}")
 
 if __name__ == "__main__":
     main()
