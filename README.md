@@ -76,6 +76,7 @@ pip install -e .
 Using uv is optional but suggested. The pip install commands should still run as per normal. Run these commands inside your virtual environment:
 
 ```bash
+source .venv/bin/activate
 module load cuda/12.6.0
 pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu126
 pip install -e .
