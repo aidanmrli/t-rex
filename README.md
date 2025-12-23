@@ -1,33 +1,3 @@
-<div align="center">
-    <img alt="OpenRLHF logo" src="./docs/logo.png" style="height: 140px;" />
-</div>
-<div align="center">
-<p align="center">
-      <a href="https://github.com/OpenRLHF/OpenRLHF/graphs/contributors">
-        <img alt="GitHub Contributors" src="https://img.shields.io/github/contributors/OpenRLHF/OpenRLHF" />
-      </a>
-      <a href="https://github.com/OpenRLHF/OpenRLHF/issues">
-        <img alt="Issues" src="https://img.shields.io/github/issues/OpenRLHF/OpenRLHF?color=0088ff" />
-      </a>
-      <a href="https://github.com/OpenRLHF/OpenRLHF/discussions">
-        <img alt="Issues" src="https://img.shields.io/github/discussions/OpenRLHF/OpenRLHF?color=0088ff" />
-      </a>
-      <a href="https://github.com/OpenRLHF/OpenRLHF/pulls">
-        <img alt="GitHub pull requests" src="https://img.shields.io/github/issues-pr/OpenRLHF/OpenRLHF?color=0088ff" />
-      <a href="https://github.com/OpenRLHF/OpenRLHF/stargazers">
-        <img alt="GitHub stars" src="https://img.shields.io/github/stars/OpenRLHF/OpenRLHF?color=ccf" />
-      </a>
-      <a href="https://deepwiki.com/OpenRLHF/OpenRLHF"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
-      <br>
-      <em>Open-source / Comprehensive / Lightweight / Easy-to-use</em>
-    </p>
-</p>
-</div>
-
-<hr>
-
-<span>[ English | <a href="README_zh.md">中文</a> | <a href="README_ja.md">日本語</a> ]</span>
-
 OpenRLHF is the first easy-to-use, high-performance open-source RLHF framework built on Ray, vLLM, ZeRO-3 and HuggingFace Transformers, designed to make RLHF training simple and accessible:
 
 - **Distributed Architecture with Ray**  
@@ -39,27 +9,6 @@ OpenRLHF is the first easy-to-use, high-performance open-source RLHF framework b
   Built on [DeepSpeed's](https://github.com/deepspeedai/DeepSpeed) ZeRO-3, [deepcompile](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/deepcompile/README.md) and [AutoTP](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/huggingface-tp/README.md), OpenRLHF enables large model training without heavyweight frameworks. It works directly with HuggingFace for easy loading and fine-tuning of pretrained models.
 - **Optimized PPO Implementation**  
   Incorporates advanced PPO tricks inspired by practical guides and community best practices, enhancing training stability and reward quality in RLHF workflows. Referencing [Zhihu](https://zhuanlan.zhihu.com/p/622134699) and [Advanced Tricks for Training Large Language Models with Proximal Policy Optimization](https://hijkzzz.notion.site/rlhf-implementation-tricks?v=158d9a33ecc98132bf9e000c39227361).
-
-More details are in [Slides](https://docs.google.com/presentation/d/1JRhB1d7csofx0PIZBmfyBdMluxNd5JLPpUHrrvVhGnk/edit?usp=sharing) | [Technical Report](https://www.researchgate.net/publication/393414548_OpenRLHF_An_Easy-to-use_Scalable_and_High-performance_RLHF_Framework) | [Documents](https://openrlhf.readthedocs.io/)
-
-## News
-- [2025/11] [NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) OpenRLHF now supports integration with NeMo-Gym for advanced agent-based RLHF training with external evaluation environments.
-- [2025/10] [ScaleRL](https://arxiv.org/abs/2510.13786) validates the effectiveness of REINFORCE++-baseline in large-scale training scenarios. Releases [REINFORCE++ slides](https://docs.google.com/presentation/d/1stieP_3PM1z4Hq1YWR3GywFkxcHEAlstXMaS23KlGN4)
-- [2025/8] [ProRL V2](https://hijkzzz.notion.site/prorl-v2) uses REINFORCE++-baseline to train a state-of-the-art 1.5B reasoning model and releases the blog post [REINFORCE++-baseline is all you need in RLVR](https://medium.com/@janhu9527/reinforce-baseline-is-all-you-need-in-rlvr-f5406930aa85).
-- [2025/6] [Magistral](https://mistral.ai/static/research/magistral.pdf) uses the method quite similar to REINFORCE++-baseline to train the reasoning models.
-- [2025/5] [MARTI](https://github.com/TsinghuaC3I/MARTI) has been released as a fork of OpenRLHF. It is designed to train LLM-based multi-agent systems using RL, by integrating centralized multi-agent interactions with distributed policy training.
-- [2025/5] OpenRLHF 0.8.0 supports [Async Pipeline RLHF](./examples/scripts/train_reinforce_baseline_llama_ray_async.sh) (`--async_train`) and [Async Agent RLHF](./examples/scripts/train_reinforce_baseline_llama_ray_agent_async.sh)(`--agent_func_path`) with redesigned class-based Agent API
-- [2025/4] Post the blog [Accelerating RLHF with vLLM, Best Practice from OpenRLHF](https://blog.vllm.ai/2025/04/23/openrlhf-vllm.html)
-- [2025/4] Clean OpenRLHF: Refactored the source code based on Single Controller and Unified Packing Samples
-- [2025/3] The CMU [Advanced Natural Language Processing Spring 2025](https://cmu-l3.github.io/anlp-spring2025/) course uses OpenRLHF as the RLHF framework teaching case.
-- [2025/2] [Logic-RL](https://arxiv.org/abs/2502.14768) and [PRIME](https://arxiv.org/abs/2502.01456) demonstrate that REINFORCE++ is more stable in training compared to GRPO and faster than PPO.
-- [2025/2] [LMM-R1](https://github.com/TideDra/lmm-r1) is a fork of OpenRLHF, aimed at providing high-performance RL infrastructure for reproduction of DeepSeek-R1 on multimodal tasks.
-- [2025/2] MIT & Microsoft proposed the [On the Emergence of Thinking in LLMs I: Searching for the Right Intuition](https://arxiv.org/pdf/2502.06773) using OpenRLHF
-- [2025/1] HKUST reproduced the [DeepSeek-R1-Zero and DeepSeek-R1 training on small models using OpenRLHF](https://github.com/hkust-nlp/simpleRL-reason)
-- [2024/12] We "proposed" 😊 the [REINFORCE++: A Simple and Efficient Approach for Aligning Large Language Models](https://www.researchgate.net/publication/387487679_REINFORCE_An_Efficient_RLHF_Algorithm_with_Robustnessto_Both_Prompt_and_Reward_Models).
-- [2024/12] We analyzed the PPO, REINFORCE++, GRPO and RLOO in the [Notion Blogpost](https://hijkzzz.notion.site/unraveling-rlhf-and-its-variants-engineering-insights#147d9a33ecc9806090f3d5c749d31f05).
-- [2023/8] OpenRLHF was open-sourced. 
-
 
 ## Features
 
@@ -90,6 +39,9 @@ More details are in [Slides](https://docs.google.com/presentation/d/1JRhB1d7csof
 
 ### Installation
 
+#### Original instructions
+Instructions for Mila and DRAC clusters are below.
+
 To use OpenRLHF, first launch the docker container (**Recommended**) and `pip install` openrlhf inside the docker container:
 
 ```bash
@@ -119,6 +71,19 @@ pip install -e .
 > [!NOTE]
 >We recommend using vLLM 0.12.0 or higher.
 >We also provided the [Dockerfiles for vLLM](./dockerfile/) and [One-Click Installation Script of Nvidia-Docker](./examples/scripts/nvidia_docker_install.sh).
+
+#### Mila cluster setup
+Using uv is optional but suggested. The pip install commands should still run as per normal. Run these commands inside your virtual environment:
+
+```bash
+module load cuda/12.6.0
+pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu126
+pip install -e .
+pip install vllm
+pip install flash-attn
+# Note: flash-attn might take a while. Consider using a prebuilt (wheel)[https://github.com/mjun0812/flash-attention-prebuild-wheels/blob/main/docs/packages.md#flash-attention-283]:
+uv pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.5.4/flash_attn-2.8.3+cu126torch2.9-cp312-cp312-linux_x86_64.whl
+```
 
 ### Prepare Datasets
 OpenRLHF provides multiple data processing methods in our dataset classes.
