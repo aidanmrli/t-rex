@@ -252,6 +252,7 @@ def main():
     parser.add_argument("--n_samples", type=int, default=8)
     parser.add_argument("--sweep_size", type=int, default=100)
     parser.add_argument("--tp_size", type=int, default=1)
+    parser.add_argument("--output_dir", type=str, default="trex/results/bon_baseline")
     parser.add_argument("--use_wandb", action="store_true")
     
     args = parser.parse_args()
@@ -263,6 +264,7 @@ def main():
         n_samples=args.n_samples,
         sweep_size=args.sweep_size,
         tp_size=args.tp_size,
+        output_dir=args.output_dir,
         use_wandb=args.use_wandb
     )
     
