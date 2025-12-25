@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --partition=unkillable                           # Ask for unkillable job
-#SBATCH --cpus-per-task=2                                # Ask for 2 CPUs
-#SBATCH --gres=gpu:1                                     # Ask for 1 GPU
-#SBATCH --mem=10G                                        # Ask for 10 GB of RAM
-#SBATCH --time=3:00:00                                   # The job will run for 3 hours
+#SBATCH --partition=short-unkillable                           
+#SBATCH --cpus-per-task=64                                
+#SBATCH --gres=gpu:h100:4                                     
+#SBATCH --mem=512G                                        
+#SBATCH --time=3:00:00                                   
 #SBATCH -o /network/scratch/l/lia/t-rex/slurm/slurm-%j.out  # Write the log on scratch
 
 # 1. Load the required modules
@@ -20,6 +20,7 @@ SCRATCH_WEIGHTS="/network/scratch/l/lia/model_weights"
 # 3. Set environment variables for model weights and datasets
 export HF_HOME="$SCRATCH_WEIGHTS"
 export HF_DATASETS_CACHE="$SCRATCH_WEIGHTS"
+export TOKENIZERS_PARALLELISM=false
 mkdir -p "$SCRATCH_WEIGHTS"
 
 # 4. Set up experimental results on scratch and symlink back
@@ -37,23 +38,42 @@ fi
 
 # NOTE: The model should be saved in $SLURM_TMPDIR
 
-# Configuration
-DATASET=${1:-"gsm8k"}
-MODEL=${2:-"Qwen/Qwen2.5-Math-7B-Instruct"}
-N_SAMPLES=${3:-8}
-TP_SIZE=${4:-1}
+# =============================================================================
+# EXPERIMENT CONFIGURATION - Edit these values directly
+# =============================================================================
 
-# Set output directory
-OUTPUT_DIR="trex/results/bon_baseline/${DATASET}_n${N_SAMPLES}"
+# Model
+MODEL="Qwen/Qwen2.5-Math-7B-Instruct"
+# Extracts the model name from the path (e.g., Qwen2.5-Math-7B-Instruct)
+MODEL_NAME=$(basename "$MODEL")
 
-# Set path to the dataset based on input
-if [ "$DATASET" == "gsm8k" ]; then
-    DATASET_PATH="trex/data/gsm8k_platinum_test.jsonl"
-elif [ "$DATASET" == "math" ]; then
-    DATASET_PATH="trex/data/math_test.jsonl"
-else
-    echo "Unknown dataset: $DATASET. Using default gsm8k path."
-    DATASET_PATH="trex/data/gsm8k_platinum_test.jsonl"
+# Dataset: "gsm8k" or "math"
+# DATASET="gsm8k"
+# DATASET_PATH="trex/data/gsm8k_platinum_test.jsonl"
+DATASET="math"
+DATASET_PATH="trex/data/math_test.jsonl"
+
+# Sampling
+N_SAMPLES=32                # Number of samples per prompt (Best-of-N)
+SWEEP_SIZE=100             # Number of problems for temperature sweep
+
+# vLLM / GPU settings
+TP_SIZE=4                  # Tensor parallelism (must match #SBATCH --gres=gpu:X)
+MAX_NUM_SEQS=512           # Max sequences in KV cache
+GPU_MEM_UTIL=0.95          # GPU memory utilization (0.0-1.0)
+
+# Chat Template: Set to false for base models, true for instruct models
+APPLY_CHAT_TEMPLATE=true
+
+# Output
+OUTPUT_DIR="trex/results/bon_baseline/${MODEL_NAME}/${DATASET}_n${N_SAMPLES}"
+
+# =============================================================================
+
+# Additional arguments
+EXTRA_ARGS=""
+if [ "$APPLY_CHAT_TEMPLATE" = false ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --no_chat_template"
 fi
 
 # Run the baseline script
@@ -64,9 +84,12 @@ python -m trex.baselines.best_of_n_baseline \
     --dataset_path "$DATASET_PATH" \
     --n_samples "$N_SAMPLES" \
     --tp_size "$TP_SIZE" \
+    --max_num_seqs "$MAX_NUM_SEQS" \
+    --gpu_memory_utilization "$GPU_MEM_UTIL" \
     --output_dir "$OUTPUT_DIR" \
-    --sweep_size 100 \
-    --use_wandb
+    --sweep_size "$SWEEP_SIZE" \
+    --use_wandb \
+    $EXTRA_ARGS
 
 # Then, after the job is finished, copy whatever you want to save on $SCRATCH
 # cp $SLURM_TMPDIR/<to_save> $SCRATCH/t-rex

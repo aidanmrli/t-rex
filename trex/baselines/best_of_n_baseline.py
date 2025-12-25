@@ -60,6 +60,12 @@ class BestOfNBaseline:
     def prepare_prompts(self, dataset: List[Dict[str, Any]]) -> List[str]:
         """Apply chat template if configured."""
         prompts = []
+        
+        # Initialize LLM early if we need the tokenizer for chat templates
+        if self.config.apply_chat_template:
+            self._init_llm()
+            tokenizer = self.llm.get_tokenizer()
+            
         for item in dataset:
             prompt = item[self.config.prompt_key]
             if self.config.apply_chat_template:
@@ -68,13 +74,12 @@ class BestOfNBaseline:
                     {"role": "system", "content": self.config.system_prompt},
                     {"role": "user", "content": prompt}
                 ]
-                # Note: vLLM's LLM class doesn't have a direct apply_chat_template like transformers
-                # but we can use the tokenizer or assume a standard format for Qwen.
-                # For Qwen2.5-Math-Instruct, the format is:
-                # <|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
-                formatted_prompt = f"<|im_start|>system\n{self.config.system_prompt}<|im_end|>\n" \
-                                   f"<|im_start|>user\n{prompt}<|im_end|>\n" \
-                                   f"<|im_start|>assistant\n"
+                # Use vLLM's tokenizer to apply the chat template
+                formatted_prompt = tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                )
                 prompts.append(formatted_prompt)
             else:
                 prompts.append(prompt)
@@ -252,8 +257,14 @@ def main():
     parser.add_argument("--n_samples", type=int, default=8)
     parser.add_argument("--sweep_size", type=int, default=100)
     parser.add_argument("--tp_size", type=int, default=1)
+    parser.add_argument("--max_num_seqs", type=int, default=256, help="Max sequences in KV cache")
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="GPU memory fraction for vLLM")
     parser.add_argument("--output_dir", type=str, default="trex/results/bon_baseline")
     parser.add_argument("--use_wandb", action="store_true")
+    parser.add_argument("--apply_chat_template", action="store_true", default=True, 
+                        help="Whether to apply chat template (default: True)")
+    parser.add_argument("--no_chat_template", action="store_false", dest="apply_chat_template",
+                        help="Disable chat template for base models")
     
     args = parser.parse_args()
     
@@ -264,8 +275,11 @@ def main():
         n_samples=args.n_samples,
         sweep_size=args.sweep_size,
         tp_size=args.tp_size,
+        max_num_seqs=args.max_num_seqs,
+        gpu_memory_utilization=args.gpu_memory_utilization,
         output_dir=args.output_dir,
-        use_wandb=args.use_wandb
+        use_wandb=args.use_wandb,
+        apply_chat_template=args.apply_chat_template
     )
     
     baseline = BestOfNBaseline(config)
