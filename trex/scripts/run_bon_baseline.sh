@@ -6,6 +6,8 @@
 #SBATCH --mem=512G                                        
 #SBATCH --time=3:00:00                                   
 #SBATCH -o /network/scratch/l/lia/t-rex/slurm/slurm-%j.out  # Write the log on scratch
+#SBATCH --requeue                                         # Requeue job on preemption
+#SBATCH --signal=SIGUSR1@120                              # Send SIGUSR1 120s before timeout
 
 # 1. Load the required modules
 module load cuda/12.6.0
@@ -25,6 +27,7 @@ mkdir -p "$SCRATCH_WEIGHTS"
 
 # 4. Set up experimental results on scratch and symlink back
 mkdir -p "$SCRATCH_DIR/results"
+mkdir -p "$SCRATCH_DIR/slurm"  # Ensure slurm log directory exists
 
 # If trex/results is a directory but not a symlink, move its content to scratch and symlink
 if [ -d "trex/results" ] && [ ! -L "trex/results" ]; then
@@ -42,16 +45,40 @@ fi
 # EXPERIMENT CONFIGURATION - Edit these values directly
 # =============================================================================
 
-# Model
-MODEL="Qwen/Qwen2.5-Math-7B-Instruct"
-# Extracts the model name from the path (e.g., Qwen2.5-Math-7B-Instruct)
+# =============================================================================
+# MODEL OPTIONS:
+# -----------------------------------------------------------------------------
+# Model Name              | Path                              | Chat Template
+# -----------------------------------------------------------------------------
+# Qwen2.5-7B (Base)       | Qwen/Qwen2.5-7B                   | false
+# Qwen3-8B (Base)         | Qwen/Qwen3-8B-Base                | false
+# Qwen2.5-7B-Instruct     | Qwen/Qwen2.5-7B-Instruct          | true
+# Qwen2.5-Math-7B-Instruct| Qwen/Qwen2.5-Math-7B-Instruct     | true
+# =============================================================================
+# NOTE: Base models do NOT have chat templates. Set APPLY_CHAT_TEMPLATE=false.
+#       Instruct models require chat templates. Set APPLY_CHAT_TEMPLATE=true.
+# =============================================================================
+
+MODEL="Qwen/Qwen2.5-7B"
+# Extracts the model name from the path (e.g., Qwen2.5-7B)
 MODEL_NAME=$(basename "$MODEL")
 
-# Dataset: "gsm8k" or "math"
+# =============================================================================
+# DATASET OPTIONS:
+# -----------------------------------------------------------------------------
+# Dataset Name    | Path                                   | Description
+# -----------------------------------------------------------------------------
+# gsm8k           | trex/data/gsm8k_test.jsonl             | GSM8K test set
+# gsm8k           | trex/data/gsm8k_platinum_test.jsonl    | GSM8K Platinum (cleaned)
+# math            | trex/data/math_test.jsonl              | Full MATH test (5000 problems)
+# math            | trex/data/math500_test.jsonl           | MATH-500 (curated 500 subset)
+# =============================================================================
 # DATASET="gsm8k"
-# DATASET_PATH="trex/data/gsm8k_platinum_test.jsonl"
+# DATASET_PATH="trex/data/gsm8k_test.jsonl"
+# DATASET="math"
+# DATASET_PATH="trex/data/math500_test.jsonl"
 DATASET="math"
-DATASET_PATH="trex/data/math_test.jsonl"
+DATASET_PATH="trex/data/math500_test.jsonl"
 
 # Sampling
 N_SAMPLES=32                # Number of samples per prompt (Best-of-N)
@@ -63,7 +90,18 @@ MAX_NUM_SEQS=512           # Max sequences in KV cache
 GPU_MEM_UTIL=0.95          # GPU memory utilization (0.0-1.0)
 
 # Chat Template: Set to false for base models, true for instruct models
-APPLY_CHAT_TEMPLATE=true
+# NOTE: Base models do NOT have chat templates or thinking modes.
+APPLY_CHAT_TEMPLATE=false
+
+# Reasoning / Thinking Mode (for Qwen3, DeepSeek-R1, etc.)
+# NOTE: Only applicable for models trained with reasoning tokens (like <think>)
+ENABLE_THINKING=false       # Enable thinking in chat template
+ENABLE_REASONING=false      # Enable reasoning in vLLM engine
+REASONING_PARSER=""         # Parser for reasoning tokens (e.g., "deepseek_r1" for Qwen3/DeepSeek)
+
+# Checkpointing: Saves progress for preemptible clusters
+ENABLE_CHECKPOINTING=true
+EVAL_CHUNK_SIZE=50         # Save checkpoint every N problems during full eval
 
 # Output
 OUTPUT_DIR="trex/results/bon_baseline/${MODEL_NAME}/${DATASET}_n${N_SAMPLES}"
@@ -74,6 +112,34 @@ OUTPUT_DIR="trex/results/bon_baseline/${MODEL_NAME}/${DATASET}_n${N_SAMPLES}"
 EXTRA_ARGS=""
 if [ "$APPLY_CHAT_TEMPLATE" = false ]; then
     EXTRA_ARGS="$EXTRA_ARGS --no_chat_template"
+fi
+if [ "$ENABLE_CHECKPOINTING" = false ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --no_checkpointing"
+fi
+if [ "$ENABLE_THINKING" = true ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --enable_thinking"
+fi
+if [ "$ENABLE_REASONING" = true ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --enable_reasoning"
+fi
+if [ -n "$REASONING_PARSER" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --reasoning_parser $REASONING_PARSER"
+fi
+
+# Log job info
+echo "============================================="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURM_NODELIST"
+echo "Start Time: $(date)"
+echo "Model: $MODEL"
+echo "Dataset: $DATASET"
+echo "Output Dir: $OUTPUT_DIR"
+echo "Checkpointing: $ENABLE_CHECKPOINTING"
+echo "============================================="
+
+# Check if this is a requeued job (checkpoint should exist)
+if [ -f "$OUTPUT_DIR/checkpoint.json" ]; then
+    echo "Found existing checkpoint - will resume from previous state"
 fi
 
 # Run the baseline script
@@ -88,8 +154,16 @@ python -m trex.baselines.best_of_n_baseline \
     --gpu_memory_utilization "$GPU_MEM_UTIL" \
     --output_dir "$OUTPUT_DIR" \
     --sweep_size "$SWEEP_SIZE" \
+    --eval_chunk_size "$EVAL_CHUNK_SIZE" \
     --use_wandb \
     $EXTRA_ARGS
+
+EXIT_CODE=$?
+
+echo "============================================="
+echo "End Time: $(date)"
+echo "Exit Code: $EXIT_CODE"
+echo "============================================="
 
 # Then, after the job is finished, copy whatever you want to save on $SCRATCH
 # cp $SLURM_TMPDIR/<to_save> $SCRATCH/t-rex

@@ -38,6 +38,11 @@ class BaselineConfig:
     output_dir: str = "trex/results/bon_baseline"
     save_generations: bool = True
     
+    # Checkpointing (for preemptible clusters)
+    enable_checkpointing: bool = True
+    checkpoint_file: str = "checkpoint.json"
+    eval_chunk_size: int = 100  # Save checkpoint every N problems during full eval
+    
     # Logging
     use_wandb: bool = False
     wandb_project: str = "t-rex"
@@ -46,6 +51,11 @@ class BaselineConfig:
     # Chat template (for instruct models)
     apply_chat_template: bool = True
     system_prompt: str = "You are a helpful assistant that solves math problems step by step. Put your final answer in \\boxed{}."
+    
+    # Reasoning / Thinking mode
+    enable_thinking: bool = False  # Enable thinking in chat template
+    enable_reasoning: bool = False  # Enable reasoning in vLLM engine
+    reasoning_parser: Optional[str] = None  # Parser for reasoning tokens (e.g. "deepseek_r1")
     
     def __post_init__(self):
         """Set derived values."""
