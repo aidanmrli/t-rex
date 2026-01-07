@@ -2,10 +2,11 @@
 
 #SBATCH --partition=short-unkillable                           
 #SBATCH --cpus-per-task=32                                
-#SBATCH --gres=gpu:h100:2                                     
+#SBATCH --gres=gpu:h100:4                                     
 #SBATCH --mem=256G                                        
-#SBATCH --time=2:00:00                                   
+#SBATCH --time=3:00:00                                   
 #SBATCH -o /network/scratch/l/lia/t-rex/slurm/eval-grpo-%j.out
+#SBATCH -e /network/scratch/l/lia/t-rex/slurm/eval-grpo-%j.err
 
 # =============================================================================
 # T-REX GRPO Evaluation Script
@@ -33,7 +34,7 @@ mkdir -p "$SCRATCH_DIR/slurm"
 
 if [ -d "trex/results" ] && [ ! -L "trex/results" ]; then
     # If it's a real directory, symlink logic handles it (assumed handled by training script)
-    pass
+    :
 elif [ ! -e "trex/results" ]; then
     ln -s "$SCRATCH_DIR/results" trex/results
 fi
@@ -85,7 +86,7 @@ EVAL_N_SAMPLES=16
 # Temperatures to test
 # 0.0 for Greedy (deterministic)
 # 0.6 for Sampling (standard exploration)
-TEMPS="0.0 0.6"
+TEMPS="0.0 0.6 1.0"
 
 # Output Directory
 OUTPUT_DIR="trex/results/eval_grpo/${MODEL_NAME}/${TEST_DATASET}_trained_n${TRAIN_N_SAMPLES}"
@@ -118,6 +119,5 @@ python -m trex.baselines.best_of_n_baseline \
     --output_dir "$OUTPUT_DIR" \
     --sweep_size 100 \
     --eval_chunk_size 50 \
-    --apply_chat_template \
     --use_wandb
 
