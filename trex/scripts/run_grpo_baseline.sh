@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=64                                
 #SBATCH --gres=gpu:h100:4                                     
 #SBATCH --mem=512G                                        
-#SBATCH --time=6:00:00                                   
+#SBATCH --time=3:00:00                                   
 #SBATCH -o /network/scratch/l/lia/t-rex/slurm/grpo-%j.out
 #SBATCH --requeue
 #SBATCH --signal=SIGUSR1@120
@@ -12,7 +12,100 @@
 # =============================================================================
 # T-REX GRPO Baseline Training Script
 # Uses OpenRLHF's native GRPO support via train_ppo_ray.py
+#
+# AUTOMATIC REQUEUE: This script automatically resubmits itself on SLURM
+# timeout, allowing training to span multiple job submissions. Training
+# resumes from the latest checkpoint.
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# AUTOMATIC REQUEUE CONFIGURATION
+# -----------------------------------------------------------------------------
+# Maximum number of consecutive job submissions (safety limit)
+MAX_SUBMISSIONS=${MAX_SUBMISSIONS:-20}
+
+# Track submission count across requeues (inherited from parent job)
+export TREX_SUBMISSION_COUNT=$((${TREX_SUBMISSION_COUNT:-0} + 1))
+
+# Absolute path to this script for self-resubmission
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+
+# Check if we've exceeded max submissions (prevents infinite loops on real errors)
+if [ "$TREX_SUBMISSION_COUNT" -gt "$MAX_SUBMISSIONS" ]; then
+    echo "============================================="
+    echo "ERROR: Exceeded maximum submissions ($MAX_SUBMISSIONS)"
+    echo "This may indicate a persistent error. Check logs and restart manually."
+    echo "To restart: export TREX_SUBMISSION_COUNT=0 && sbatch $SCRIPT_PATH"
+    echo "============================================="
+    exit 1
+fi
+
+echo "============================================="
+echo "Job Submission: $TREX_SUBMISSION_COUNT / $MAX_SUBMISSIONS"
+echo "============================================="
+
+# -----------------------------------------------------------------------------
+# SIGNAL HANDLING FOR GRACEFUL REQUEUE
+# -----------------------------------------------------------------------------
+REQUEUE_SUBMITTED=false
+
+submit_continuation_job() {
+    if [ "$REQUEUE_SUBMITTED" = true ]; then
+        echo "Continuation job already submitted"
+        return
+    fi
+    
+    # Check completion marker (set after this section is defined)
+    if [ -n "$COMPLETION_MARKER" ] && [ -f "$COMPLETION_MARKER" ]; then
+        echo "Training complete - no requeue needed"
+        return
+    fi
+    
+    if [ "$TREX_SUBMISSION_COUNT" -ge "$MAX_SUBMISSIONS" ]; then
+        echo "Max submissions reached - no requeue"
+        return
+    fi
+    
+    echo "Submitting continuation job..."
+    sbatch --export=ALL,TREX_SUBMISSION_COUNT=$TREX_SUBMISSION_COUNT "$SCRIPT_PATH"
+    REQUEUE_SUBMITTED=true
+    echo "Continuation job submitted. Current job will continue until killed."
+}
+
+# Trap SIGUSR1 (sent 120s before timeout) - submit new job but keep running
+# to maximize checkpoint opportunities
+handle_sigusr1() {
+    echo ""
+    echo "============================================="
+    echo "SIGUSR1 received - $(date)"
+    echo "Job will be killed in ~120 seconds"
+    echo "Submitting continuation job now..."
+    echo "============================================="
+    submit_continuation_job
+}
+trap handle_sigusr1 SIGUSR1
+
+# Also trap EXIT for cases where script is killed before reaching completion handling
+handle_exit() {
+    local trap_exit_code=$?
+    # Use PYTHON_EXIT_CODE if set (script got past the python command), otherwise use trap's $?
+    # This handles cases where the script itself is killed before reaching completion handling
+    local actual_exit_code=${PYTHON_EXIT_CODE:-$trap_exit_code}
+    
+    if [ "$actual_exit_code" -ne 0 ] && [ "$REQUEUE_SUBMITTED" = false ]; then
+        # Check if checkpoints exist before requeuing
+        if [ -n "$CKPT_DIR" ] && [ -d "$CKPT_DIR" ] && [ "$(ls -A "$CKPT_DIR" 2>/dev/null)" ]; then
+            echo "EXIT trap: Non-zero exit ($actual_exit_code) with checkpoints - submitting continuation job"
+            submit_continuation_job
+        fi
+    fi
+}
+trap handle_exit EXIT
+
+# -----------------------------------------------------------------------------
+# ENVIRONMENT SETUP
+# -----------------------------------------------------------------------------
 
 # 1. Load the required modules
 module load cuda/12.6.0
@@ -104,12 +197,29 @@ APPLY_CHAT_TEMPLATE=false
 
 # WandB
 USE_WANDB=true
+WANDB_API_KEY="8ac57bf9aa5138a9e30d747070d1ebc22b581efc"
 WANDB_PROJECT="t-rex"
 
 # Output
 OUTPUT_DIR="trex/results/grpo_baseline/${MODEL_NAME}/${DATASET}_n${N_SAMPLES}"
 CKPT_DIR="${OUTPUT_DIR}/checkpoints"
 EFFICIENCY_PATH="${OUTPUT_DIR}/efficiency_metrics.json"
+COMPLETION_MARKER="${OUTPUT_DIR}/.training_complete"
+
+# =============================================================================
+# TRAINING COMPLETION CHECK
+# =============================================================================
+# Skip if training already completed (prevents wasted job submissions)
+if [ -f "$COMPLETION_MARKER" ]; then
+    echo "============================================="
+    echo "TRAINING ALREADY COMPLETE"
+    echo "Completion marker: $COMPLETION_MARKER"
+    echo "To restart training, remove the marker and checkpoints:"
+    echo "  rm -f $COMPLETION_MARKER"
+    echo "  rm -rf $CKPT_DIR/*"
+    echo "============================================="
+    exit 0
+fi
 
 # =============================================================================
 # AUTOMATIC CHECKPOINT RESUMPTION
@@ -127,6 +237,7 @@ if [ -d "$CKPT_DIR" ] && [ "$(ls -A $CKPT_DIR 2>/dev/null)" ]; then
     echo "============================================="
     echo "CHECKPOINT DETECTED - RESUMING TRAINING"
     echo "Checkpoint dir: $CKPT_DIR"
+    echo "Submission: $TREX_SUBMISSION_COUNT / $MAX_SUBMISSIONS"
     echo "============================================="
     LOAD_CHECKPOINT=true
 else
@@ -210,9 +321,38 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_gpus_per_node 4 \
     $EXTRA_ARGS
 
-EXIT_CODE=$?
+# Capture Python exit code in a variable the EXIT trap can access
+PYTHON_EXIT_CODE=$?
 
 echo "============================================="
 echo "End Time: $(date)"
-echo "Exit Code: $EXIT_CODE"
+echo "Exit Code: $PYTHON_EXIT_CODE"
 echo "============================================="
+
+# =============================================================================
+# TRAINING COMPLETION HANDLING
+# =============================================================================
+if [ $PYTHON_EXIT_CODE -eq 0 ]; then
+    echo "============================================="
+    echo "TRAINING COMPLETED SUCCESSFULLY"
+    echo "============================================="
+    # Create completion marker to prevent unnecessary requeues
+    touch "$COMPLETION_MARKER"
+    echo "Created completion marker: $COMPLETION_MARKER"
+else
+    echo "============================================="
+    echo "TRAINING INTERRUPTED (exit code: $PYTHON_EXIT_CODE)"
+    echo "============================================="
+    # Explicitly handle requeue here - don't rely solely on EXIT trap
+    # (EXIT trap is backup for when script is killed before reaching this point)
+    if [ "$REQUEUE_SUBMITTED" = false ]; then
+        if [ -d "$CKPT_DIR" ] && [ "$(ls -A "$CKPT_DIR" 2>/dev/null)" ]; then
+            echo "Checkpoints exist - submitting continuation job"
+            submit_continuation_job
+        else
+            echo "No checkpoints found - not requeuing (training may have failed before first checkpoint)"
+        fi
+    else
+        echo "Continuation job already submitted via SIGUSR1"
+    fi
+fi
