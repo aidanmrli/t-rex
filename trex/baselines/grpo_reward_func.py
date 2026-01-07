@@ -414,16 +414,21 @@ def reward_func(queries: List[str], prompts: List[str], labels: List[str], **kwa
         }
     )
     
+    # NOTE: Don't include extra_logs with scalar values - OpenRLHF's
+    # update_samples_with_rewards expects extra_logs to contain per-sample
+    # tensors that can be concatenated. Scalars become 0-dim tensors which
+    # fail with torch.cat(). Efficiency metrics are already logged via WandB
+    # through the tracker.log_batch() call above.
     return {
         "rewards": torch.tensor(rewards, dtype=torch.float32),
         "scores": torch.tensor(rewards, dtype=torch.float32),
-        "extra_logs": {
-            "accuracy": accuracy,
-            "format_rate": format_rate,
-            "mean_reward": mean_reward,
-            "cumulative_samples": tracker.state.total_samples,
-            "cumulative_tokens": tracker.state.total_tokens,
-        }
+        # "extra_logs": {
+        #     "accuracy": accuracy,
+        #     "format_rate": format_rate,
+        #     "mean_reward": mean_reward,
+        #     "cumulative_samples": tracker.state.total_samples,
+        #     "cumulative_tokens": tracker.state.total_tokens,
+        # }
     }
 
 

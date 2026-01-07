@@ -6,6 +6,7 @@
 #SBATCH --mem=512G                                        
 #SBATCH --time=3:00:00                                   
 #SBATCH -o /network/scratch/l/lia/t-rex/slurm/grpo-%j.out
+#SBATCH -e /network/scratch/l/lia/t-rex/slurm/grpo-%j.err
 #SBATCH --requeue
 #SBATCH --signal=SIGUSR1@120
 
@@ -319,6 +320,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --ref_num_gpus_per_node 4 \
     --reward_num_nodes 1 \
     --reward_num_gpus_per_node 4 \
+    --critic_num_nodes 1 \
+    --critic_num_gpus_per_node 4 \
     $EXTRA_ARGS
 
 # Capture Python exit code in a variable the EXIT trap can access
