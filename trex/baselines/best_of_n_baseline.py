@@ -537,6 +537,7 @@ def main():
     parser.add_argument("--enable_thinking", action="store_true", help="Enable thinking in chat template")
     parser.add_argument("--enable_reasoning", action="store_true", help="Enable reasoning in vLLM")
     parser.add_argument("--reasoning_parser", type=str, default=None, help="Parser for reasoning tokens (e.g. deepseek_r1)")
+    parser.add_argument("--temperatures", type=float, nargs="+", default=None, help="List of temperatures to sweep")
     
     args = parser.parse_args()
     
@@ -558,6 +559,9 @@ def main():
         enable_reasoning=args.enable_reasoning,
         reasoning_parser=args.reasoning_parser,
     )
+    
+    if args.temperatures:
+        config.temperatures = args.temperatures
     
     baseline = BestOfNBaseline(config)
     baseline.run()
