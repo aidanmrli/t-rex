@@ -34,7 +34,22 @@ $$\pi_k(x) \propto p_0(x) \cdot \phi(x)^{\beta_k}$$
 
 - $\beta = 1$ (Cold): $\pi_K(x) \propto p_0(x)\phi(x)$. Strict sampling from the posterior. High validity, low diversity.
 
-### 2.3. The Twist Function (Guidance)
+### 2.3. Non-Reversible Parallel Tempering (Ballistic Flow)
+
+**The Random Walk Problem:** In standard parallel tempering, swap pairs are chosen at random. This causes particles to perform a random walk through the temperature ladder, requiring $O(K^2)$ steps for a sample to propagate from the prior ($\beta_0$) to the posterior ($\beta_K$).
+
+**The Solution:** Following Syed et al. (2022), we use a **deterministic, alternating schedule** instead of random swap selection:
+
+$$\mathcal{S}_{odd} = \{(1,2), (3,4), (5,6), \dots\}$$
+$$\mathcal{S}_{even} = \{(2,3), (4,5), (6,7), \dots\}$$
+
+At odd timesteps, we attempt swaps between pairs in $\mathcal{S}_{odd}$. At even timesteps, we attempt swaps between pairs in $\mathcal{S}_{even}$.
+
+**Ballistic Flow:** By toggling between these sets, we induce a directed, ballistic flow through the temperature ladder. A successful particle propagates from the prior to the posterior in $O(K)$ steps—significantly faster than the diffusive $O(K^2)$ of standard PT.
+
+**Intuition:** Think of it like a bucket brigade vs. random passing. In standard PT, a bucket (sample) gets passed randomly left or right. In non-reversible PT, buckets consistently move in one direction, creating an efficient pipeline.
+
+### 2.4. The Twist Function (Guidance)
 
 To guide the base model toward high-value regions efficiently, we introduce a Twist Function $\psi_\gamma(x_{1:t})$. Theoretically, the optimal twist function $\psi^*$ corresponds to the expected future potential of the sequence:
 
@@ -46,7 +61,7 @@ $$q_t(x_t | x_{<t}) \propto p_0(x_t | x_{<t}) \cdot \psi_\gamma(x_{1:t})$$
 
 This tilts the next-token probability mass toward tokens that lead to high-value futures.
 
-## 3. The Transport Mechanism: Adaptive Block-Gibbs (WE CAN REVISIT THIS LATER)
+## 3. The Transport Mechanism: Adaptive Block-Gibbs
 
 Standard Replica Exchange fails in text domains because the overlap between valid and invalid distributions is negligible. T-REX solves this via an Editor that performs local repairs to bridge the gap.
 
