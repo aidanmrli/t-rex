@@ -32,15 +32,7 @@ t-rex/
 
 ## Development Commands
 
-### Environment Setup (Mila Cluster)
-```bash
-module load cuda/12.6.0
-source .venv/bin/activate
-pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu126
-pip install -e ".[vllm]"
-```
-
-### Environment Setup (Tamia Cluster or other DRAC clusters)
+### Environment Setup
 ```bash
 module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust
 virtualenv --no-download venv
@@ -52,17 +44,15 @@ pip install --no-index vllm
 pip install ~/flash_attn-2.8.3+cu126torch2.9-cp312-cp312-linux_x86_64.whl --no-deps
 ```
 
+- Model weights should be saved in `/scratch/l/liaidan/model_weights`.
+- The scratch directory for this project is in `/scratch/l/liaidan/t-rex/`. Any experimental results should be in `/scratch/l/liaidan/t-rex/results`. Any sbatch out and err logs should be in `/scratch/l/liaidan/t-rex/slurm`.
+
 ### Pre-commit Hooks
 ```bash
 pip install pre-commit
 pre-commit install
 pre-commit run --all-files  # Manual run
 ```
-
-### Code Style
-- Black (line length 119)
-- isort (black-compatible profile)
-- Python 3.10+
 
 ### Running Tests
 ```bash
@@ -97,6 +87,22 @@ python -m trex.baselines.best_of_n_baseline \
 ```bash
 sbatch trex/scripts/run_grpo_baseline.sh
 sbatch trex/scripts/run_bon_baseline.sh
+```
+
+For SLURM, tasks are assigned to complete nodes. The nodes have 48 cores each and 512GB of available memory. Use one of the following Slurm options:
+
+- For a task on a node with an H100 GPU: `--gpus=h100:4`
+- For a task on a node with an H200 GPU: `--gpus=h200:8`
+- For tasks with multiple nodes, use `--gpus-per-nodes=h100:4` or `--gpus-per-nodes=h200:8`.
+
+NOTE: We should always check that we are maximizing our GPU usage before submitting a long job. The Tamia time limit is 24 hours. Beyond that, we should use checkpointing. 
+
+Checkpointing should be built into every script that we use for training or evaluation.
+
+Make sure that we export these variables in our SLURM scripts:
+```bash
+export HF_HOME="$SCRATCH_WEIGHTS"
+export HF_DATASETS_CACHE="$SCRATCH_WEIGHTS"
 ```
 
 ## Key Components
@@ -160,16 +166,3 @@ Target distribution: `π_k(x) ∝ p_0(x) · φ(x)^β_k`
 - Value head architecture
 - Twisted SMC inference
 - Parallel tempering chains
-
-## Cluster Configuration
-
-### Mila
-```bash
-module load cuda/12.6.0
-export HF_HOME="/network/scratch/$USER/model_weights"
-```
-
-### Resource Allocation (4x H100)
-- vLLM: 2 engines × TP size 2
-- Hybrid engine with `--colocate_all_models`
-- Memory utilization: 0.5 for colocated training
