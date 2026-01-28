@@ -193,16 +193,19 @@ class BestOfNBaseline:
     def generate_samples(self, prompts: List[str], temperature: float, n: int) -> List[Any]:
         """Generate N samples for each prompt using vLLM."""
         self._init_llm()
-        
+
+        # vLLM requires n=1 for greedy sampling (temperature=0)
+        effective_n = 1 if temperature == 0.0 else n
+
         sampling_params = SamplingParams(
-            n=n,
+            n=effective_n,
             temperature=temperature,
             top_p=self.config.top_p,
             max_tokens=self.config.max_new_tokens,
             seed=self.config.seed,
         )
         
-        print(f"Generating {n} samples per prompt at temperature {temperature}...")
+        print(f"Generating {effective_n} samples per prompt at temperature {temperature}...")
         start_time = time.time()
         outputs = self.llm.generate(prompts, sampling_params)
         end_time = time.time()
@@ -250,7 +253,8 @@ class BestOfNBaseline:
                 
                 results[f"pass@{k}"].append(pass_at_k)
         
-        return {k: float(np.mean(v)) for k, v in results.items()}
+        # Handle empty lists (when k > n for all samples) - return NaN for unavailable metrics
+        return {k: float(np.mean(v)) if v else float('nan') for k, v in results.items()}
     
     def compute_per_problem_results(self, output: Any, gold: str, n_values: List[int]) -> Dict[str, Any]:
         """Compute results for a single problem (for checkpointing)."""
