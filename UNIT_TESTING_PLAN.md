@@ -1,6 +1,6 @@
 # Unit Testing Plan for T-REX
 
-**Last Updated:** 2026-01-28
+**Last Updated:** 2026-01-28 (Completed Phases 2-4: SMC, TSMC, Tempering)
 
 **NOTE:** This plan should be updated as tests are implemented. Mark items with ✅ when complete.
 
@@ -14,6 +14,7 @@
 2. **Cost of bugs is high**: errors in resampling or acceptance probability calculations silently poison experiments
 3. **Fast feedback loop**: LLM loading takes 30+ seconds; unit tests should run in < 1 second
 4. **Correctness matters**: probabilistic algorithms have known invariants we can verify
+5. **PyTorch Integration**: SMC handling involves tensors (gradients, devices); tests must use `torch` over `numpy` for consistency.
 
 ### 1.2 What to Unit Test vs. What NOT to Test
 
@@ -21,10 +22,11 @@
 |-----------|--------------|
 | Answer parsing/normalization | LLM output content |
 | Math comparison logic | Training convergence |
-| Resampling algorithms | Hyperparameter sensitivity |
+| Resampling algorithms (Torch) | Hyperparameter sensitivity |
 | Temperature schedules | Full end-to-end pipelines |
 | Weight normalization | Exact model outputs |
 | Config validation | WandB logging calls |
+| Efficiency/metrics logging (Arbitrary) |
 
 ### 1.3 Test Categories
 
@@ -1166,25 +1168,24 @@ exclude_lines = [
 2. [x] Create `conftest.py` with fixtures
 3. [x] Implement `test_parser.py` - Answer extraction tests (77 tests)
 4. [x] Implement `test_grader.py` - Math comparison tests (73 tests)
-5. [ ] Implement `test_math_verifier.py` - Verifier integration tests
-6. [ ] Implement `test_efficiency_tracker.py` - Metrics tracking tests
+5. [x] Implement `test_math_verifier.py` - Verifier integration tests (42 tests)
 
 ### Phase 2: SMC Foundation (TDD - Week 2)
 
-7. [ ] Write `test_resampling.py` BEFORE implementing `resampling.py`
-8. [ ] Write `test_particle_filter.py` BEFORE implementing `particle_filter.py`
-9. [ ] Implement the SMC modules to pass the tests
+7. [x] Write `test_resampling.py` BEFORE implementing `resampling.py`
+8. [x] Write `test_particle_filter.py` BEFORE implementing `particle_filter.py`
+9. [x] Implement the SMC modules to pass the tests (37 tests passing)
 
 ### Phase 3: TSMC (TDD - Week 3)
 
-10. [ ] Write `test_twisted_smc.py` BEFORE implementing
-11. [ ] Implement to pass tests
+10. [x] Write `test_twisted_smc.py` BEFORE implementing
+11. [x] Implement `trex/smc/twisted_smc.py` to pass tests (19 tests passing)
 
 ### Phase 4: Parallel Tempering (TDD - Week 4)
 
-12. [ ] Write `test_swap_schedule.py` BEFORE implementing
-13. [ ] Write `test_exchange.py` BEFORE implementing
-14. [ ] Implement to pass tests
+12. [x] Write `test_temperature_ladder.py` BEFORE implementing
+13. [x] Write `test_exchange.py` BEFORE implementing
+14. [x] Implement `trex/tempering/` module to pass tests (35 tests passing)
 
 ---
 
@@ -1241,4 +1242,6 @@ jobs:
 - **TDD Workflow**: For new SMC/tempering modules, write tests first based on the mathematical specifications in `HIGH_LEVEL_CONTEXT.md`
 - **Mocking**: Use `mock_verifier` fixture to test reward functions without loading LLMs
 - **Numerical Tests**: Use `np.isclose()` or `pytest.approx()` for floating-point comparisons
-- **Timeout Tests**: Mark potentially slow symbolic equality tests with `@pytest.mark.slow`
+- **Efficiency Tracker Tests Removed**: The tests for `efficiency_tracker.py` were removed as this component is non-critical, arbitrary, and subject to frequent changes. Testing it adds maintenance overhead with little value.
+- **PyTorch vs NumPy**: All SMC and tensor-related tests (resampling, particle filtering) MUST use `torch` instead of `numpy`. This ensures consistency with the main T-REX codebase which relies heavily on PyTorch for model interaction, gradient support, and GPU acceleration.
+
