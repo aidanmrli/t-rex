@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=eval-grpo-baseline
-#SBATCH --account=def-bengioy                       
+#SBATCH --account=aip-apsarath                       
 #SBATCH --cpus-per-task=48
 #SBATCH --gres=gpu:h100:4
 #SBATCH --mem=480G                                        
