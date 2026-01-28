@@ -54,46 +54,30 @@ pip install ~/flash_attn-2.8.3+cu126torch2.9-cp312-cp312-linux_x86_64.whl --no-d
 - Model weights should be saved in `/scratch/l/liaidan/model_weights`.
 - The scratch directory for this project is in `/scratch/l/liaidan/t-rex/`. Any experimental results should be in `/scratch/l/liaidan/t-rex/results`. Any sbatch out and err logs should be in `/scratch/l/liaidan/t-rex/slurm`.
 
-### Pre-commit Hooks
-```bash
-pip install pre-commit
-pre-commit install
-pre-commit run --all-files  # Manual run
-```
-
 ### Running Tests
-```bash
-pytest                           # All tests
-pytest -m unit                   # Unit tests only
-pytest -m integration            # Integration tests only
-pytest tests/test_eval/          # Specific module
-```
 
-### Training Commands
-
-**GRPO Training:**
 ```bash
-python -m openrlhf.cli.train_ppo_ray \
-    --pretrain Qwen/Qwen2.5-7B \
-    --remote_rm_url trex/baselines/grpo_reward_func.py \
-    --prompt_data trex/data/gsm8k_train.jsonl \
-    --advantage_estimator group_norm \
-    --n_samples_per_prompt 8 \
-    --colocate_all_models \
-    --vllm_enable_sleep
-```
+# Run all tests
+pytest trex/tests/ -v
 
-**Best-of-N Evaluation:**
-```bash
-python -m trex.baselines.best_of_n_baseline \
-    --model Qwen/Qwen2.5-7B \
-    --dataset trex/data/gsm8k_test.jsonl
+# Run only fast unit tests (exclude slow/integration)
+pytest trex/tests/ -v -m "not slow and not integration"
+
+# Run specific module
+pytest trex/tests/test_eval/ -v
+
+# Run with coverage
+pytest trex/tests/ --cov=trex --cov-report=html
+
+# Run tests matching pattern
+pytest trex/tests/ -v -k "parser"
 ```
 
 **SLURM Job Submission:**
 
-Use the sbatch scripts in the `trex/scripts/tamia` folder.
+Use the sbatch scripts in the `trex/scripts/tamia` folder. These should contain training and evaluation scripts.
 
+For example:
 ```bash
 sbatch trex/scripts/tamia/run_grpo_baseline.sh
 sbatch trex/scripts/tamia/run_bon_baseline.sh
@@ -179,23 +163,3 @@ SLURM scripts support automatic requeue with checkpoint resumption. Key environm
 - `gae`: PPO (requires critic network)
 - `reinforce`: REINFORCE++
 - `rloo`: RLOO variant
-
-### Temperature in Parallel Tempering
-Target distribution: `π_k(x) ∝ p_0(x) · φ(x)^β_k`
-- β ≈ 0: Pure base model (hot, diverse)
-- β = 1: Strict posterior (cold, valid)
-
-## Implementation Status
-
-**Completed:**
-- Best-of-N baseline with temperature sweep
-- GRPO training integration
-- Math verification (multi-backend)
-- Dataset preparation
-
-**In Progress (see IMPLEMENTATION_PLAN.md):**
-- PPO math baseline
-- Standard SMC steering (Rollout Roulette)
-- Value head architecture
-- Twisted SMC inference
-- Parallel tempering chains
