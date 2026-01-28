@@ -56,33 +56,37 @@ MODEL_NAME=$(basename "$BASE_MODEL")
 DATASET="gsm8k"
 TRAIN_N_SAMPLES=8
 
-# Construct Path to GRPO Checkpoints
-CKPT_BASE_DIR="/scratch/l/liaidan/t-rex/results/grpo_baseline/${MODEL_NAME}/${DATASET}_n${TRAIN_N_SAMPLES}/checkpoints"
+# Construct Path to GRPO Output
+OUTPUT_BASE_DIR="/scratch/l/liaidan/t-rex/results/grpo_baseline/${MODEL_NAME}/${DATASET}_n${TRAIN_N_SAMPLES}"
+CKPT_BASE_DIR="${OUTPUT_BASE_DIR}/checkpoints"
 
-# Find latest checkpoint (globally or step-based)
-if [ -d "$CKPT_BASE_DIR" ]; then
-    # Look for directories like 'global_step_*' or similar, sort by modification time (latest first)
-    # Using 'ls -td' to sort by time, head -n 1 to get latest
-    LATEST_CKPT=$(ls -td "$CKPT_BASE_DIR"/*/ | head -n 1)
-    
+# Prefer final model if training completed, otherwise use latest checkpoint
+if [ -f "${OUTPUT_BASE_DIR}/.training_complete" ]; then
+    # Training completed - use the final model in the base directory
+    MODEL_PATH="$OUTPUT_BASE_DIR"
+    echo "Training completed. Using final model: $MODEL_PATH"
+elif [ -d "$CKPT_BASE_DIR" ]; then
+    # Training incomplete - find latest checkpoint
+    LATEST_CKPT=$(ls -td "$CKPT_BASE_DIR"/*/ 2>/dev/null | grep -v "_actor" | head -n 1)
+
     if [ -z "$LATEST_CKPT" ]; then
         echo "ERROR: No checkpoints found in $CKPT_BASE_DIR"
         echo "Please check your training run."
         exit 1
     fi
-    
+
     # Remove trailing slash
     MODEL_PATH=${LATEST_CKPT%/}
     echo "Using latest checkpoint: $MODEL_PATH"
 else
-    echo "ERROR: Checkpoint directory not found: $CKPT_BASE_DIR"
+    echo "ERROR: Neither final model nor checkpoint directory found at: $OUTPUT_BASE_DIR"
     exit 1
 fi
 
 # 2. Evaluation Settings
 # -----------------------------------------------------------------------------
 TEST_DATASET="gsm8k"
-TEST_DATASET_PATH="/scratch/l/liaidan/t-rex/data/gsm8k_platinum_test.jsonl" # Consistent with training script
+TEST_DATASET_PATH="/project/6100862/liaidan/t-rex/trex/data/gsm8k_platinum_test.jsonl"
 
 # Eval N samples (Best-of-N during eval)
 # Set N=1 for simple pass@1, or N=16 to see pass@1...pass@16 capabilities

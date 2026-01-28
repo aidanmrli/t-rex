@@ -287,9 +287,33 @@ Added for HPC clusters without internet on compute nodes:
 
 ## Planned Experiments
 
-### Experiment 1: GRPO Baseline on GSM8K
+### Experiment 3: GRPO Evaluation on GSM8K
 
-**Status:** RUNNING (Job 150200)
+**Status:** RUNNING (Job 150744)
+
+**Configuration:**
+- Model: Trained GRPO model from Experiment 1
+- Dataset: GSM8K Platinum test set
+- N samples: 16
+- Temperatures: 0.0 (greedy), 0.6, 1.0
+
+**To check evaluation progress:**
+```bash
+tail -30 /scratch/l/liaidan/t-rex/slurm/eval-grpo-150744.err
+```
+
+**Output Location:**
+```
+/scratch/l/liaidan/t-rex/results/eval_grpo/Qwen2.5-7B/gsm8k_trained_n8/
+```
+
+---
+
+## Completed Experiments
+
+### Experiment 1: GRPO Baseline Training on GSM8K
+
+**Status:** COMPLETE (Job 150200)
 
 **Configuration:**
 - Model: `Qwen/Qwen2.5-7B`
@@ -298,26 +322,22 @@ Added for HPC clusters without internet on compute nodes:
 - KL coefficient: 0.001
 - Learning rate: 5e-7
 - Epochs: 1
+- Training steps: 59
 
-**Checkpoint Location:**
-```
-/scratch/l/liaidan/t-rex/results/grpo_baseline/Qwen2.5-7B/gsm8k_n8/checkpoints/
-```
+**Training Metrics (Final):**
+| Metric | Value |
+|--------|-------|
+| Reward | 0.938 |
+| KL Divergence | 0.00711 |
+| Policy Loss | 0.01458 |
+| Response Length | 297.9 tokens |
 
-**To check training progress:**
-```bash
-tail -30 /scratch/l/liaidan/t-rex/slurm/grpo-150200.err
-ls -la /scratch/l/liaidan/t-rex/results/grpo_baseline/Qwen2.5-7B/gsm8k_n8/checkpoints/
+**Output Location:**
 ```
-
-**When training completes, run evaluation:**
-```bash
-sbatch trex/scripts/tamia/eval_grpo_baseline.sh
+/scratch/l/liaidan/t-rex/results/grpo_baseline/Qwen2.5-7B/gsm8k_n8/
 ```
 
 ---
-
-## Completed Experiments
 
 ### Experiment 2: Best-of-N Baseline on MATH-500
 

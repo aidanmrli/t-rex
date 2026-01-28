@@ -1,6 +1,6 @@
 # Implementation Plan for T-REX
 
-**Last Updated:** 2025-01-27
+**Last Updated:** 2026-01-28
 
 **NOTE:** We should always update this plan with our progress once we have implemented something and it works.
 
@@ -26,11 +26,16 @@ We should have three abstract components:
 | **Datasets** | `trex/data/*.jsonl` | Complete | GSM8K, MATH, MATH-500 |
 | **SLURM Scripts** | `trex/scripts/*.sh` | Complete | Auto-requeue, checkpointing |
 
+### 🔄 Ready for Testing
+
+| Component | Location | Status | Notes |
+|-----------|----------|--------|-------|
+| **PPO Baseline** | `trex/baselines/ppo_reward_func.py` | Ready | Uses GAE, critic network |
+
 ### ❌ Not Yet Implemented
 
 | Component | Priority | Complexity | Dependencies |
 |-----------|----------|------------|--------------|
-| PPO Math Baseline | High | Low | OpenRLHF infrastructure exists |
 | Standard SMC Steering (Rollout Roulette) | High | Medium | Value head, particle filtering |
 | Twisted SMC (TSMC) | High | Medium | Value head training, SMC infrastructure |
 | Parallel Tempering | Medium | High | Multiple temperature chains, exchange mechanism |
@@ -46,9 +51,9 @@ We should have three abstract components:
 **Goal:** Establish PPO baseline using existing OpenRLHF infrastructure.
 
 **Implementation:**
-- [ ] Create `trex/baselines/ppo_reward_func.py` (copy from GRPO, same interface)
-- [ ] Create `trex/scripts/run_ppo_baseline.sh` with math-specific hyperparameters
-- [ ] Key differences from GRPO:
+- [x] Create `trex/baselines/ppo_reward_func.py` (reuses GRPO reward function)
+- [x] Create `trex/scripts/tamia/run_ppo_baseline.sh` with PPO-specific hyperparameters
+- [x] Key differences from GRPO:
   - Uses `--advantage_estimator gae` instead of `group_norm`
   - Requires critic network (value function)
   - Different KL penalty schedule
@@ -62,9 +67,9 @@ We should have three abstract components:
 --kl_estimator k1
 ```
 
-**Files to Create:**
+**Files Created:**
 - `trex/baselines/ppo_reward_func.py`
-- `trex/scripts/run_ppo_baseline.sh`
+- `trex/scripts/tamia/run_ppo_baseline.sh`
 
 ---
 
@@ -504,7 +509,7 @@ Phase 3: Online Learning (Self-Distillation)
 ### Sprint 1: Baseline Completion (Week 1-2)
 1. ✅ Best-of-N baseline - DONE
 2. ✅ GRPO baseline - DONE
-3. [ ] PPO baseline
+3. ✅ PPO baseline - DONE (ready for testing)
 4. [ ] Standard SMC Steering baseline
 
 ### Sprint 2: TSMC Foundation (Week 3-4)
