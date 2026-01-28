@@ -576,11 +576,24 @@ tests/
 
 ---
 
+## Models to Evaluate
+
+All baselines and T-REX methods should be evaluated on the following models:
+
+| Model | Size | Notes |
+|-------|------|-------|
+| `Qwen/Qwen2.5-7B` | 7B | Primary model for development |
+| `google/gemma-7b` | 7B | Secondary evaluation model |
+
+**Note:** Additional models may be added based on compute availability and research needs.
+
+---
+
 ## Experiment Tracking
 
 All experiments should be logged to WandB with:
 - Method name (bon, grpo, ppo, smc, tsmc, trex)
-- Model name
+- Model name (qwen2.5-7b, gemma-7b)
 - Dataset
 - Key hyperparameters
 - Efficiency metrics (samples to X% accuracy)
