@@ -2,19 +2,17 @@
 
 #SBATCH --job-name=bon-baseline
 #SBATCH --account=aip-apsarath                          
-#SBATCH --cpus-per-task=64                                
-#SBATCH --gres=gpu:h100:4                                     
-#SBATCH --mem=512G                                        
+#SBATCH --cpus-per-task=48
+#SBATCH --gres=gpu:h100:4
+#SBATCH --mem=480G                                        
 #SBATCH --time=24:00:00                                   
 #SBATCH -o /scratch/l/liaidan/t-rex/slurm/grpo-%j.out
 #SBATCH -e /scratch/l/liaidan/t-rex/slurm/grpo-%j.err
 #SBATCH --requeue                                         # Requeue job on preemption
 #SBATCH --signal=SIGUSR1@120                              # Send SIGUSR1 120s before timeout
-- Model weights should be saved in `/scratch/l/liaidan/model_weights`.
-- The scratch directory for this project is in `/scratch/l/liaidan/t-rex/`. Any experimental results should be in `/scratch/l/liaidan/t-rex/results`. Any sbatch out and err logs should be in `/scratch/l/liaidan/t-rex/slurm`.
 
 # 1. Load the required modules
-module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust
+module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust cuda/12.6
 
 # 2. Load your environment
 source venv/bin/activate
@@ -26,7 +24,11 @@ SCRATCH_WEIGHTS="/scratch/l/liaidan/model_weights"
 # 3. Set environment variables for model weights and datasets
 export HF_HOME="$SCRATCH_WEIGHTS"
 export HF_DATASETS_CACHE="$SCRATCH_WEIGHTS"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
+export WANDB_API_KEY="8ac57bf9aa5138a9e30d747070d1ebc22b581efc"
+export WANDB_MODE=offline
 mkdir -p "$SCRATCH_WEIGHTS"
 
 # 4. Set up experimental results on scratch and symlink back

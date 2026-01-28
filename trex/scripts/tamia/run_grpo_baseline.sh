@@ -2,9 +2,9 @@
 
 #SBATCH --job-name=train-grpo-baseline
 #SBATCH --account=aip-apsarath                        
-#SBATCH --cpus-per-task=64                                
-#SBATCH --gres=gpu:h100:4                                     
-#SBATCH --mem=512G                                        
+#SBATCH --cpus-per-task=48
+#SBATCH --gres=gpu:h100:4
+#SBATCH --mem=480G                                        
 #SBATCH --time=24:00:00                                   
 #SBATCH -o /scratch/l/liaidan/t-rex/slurm/grpo-%j.out
 #SBATCH -e /scratch/l/liaidan/t-rex/slurm/grpo-%j.err
@@ -110,7 +110,7 @@ trap handle_exit EXIT
 # -----------------------------------------------------------------------------
 
 # 1. Load the required modules
-module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust
+module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust cuda/12.6
 
 # 2. Load your environment
 source venv/bin/activate
@@ -122,8 +122,11 @@ SCRATCH_WEIGHTS="/scratch/l/liaidan/model_weights"
 # 3. Set environment variables
 export HF_HOME="$SCRATCH_WEIGHTS"
 export HF_DATASETS_CACHE="$SCRATCH_WEIGHTS"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=true
 export NCCL_DEBUG=WARN
+export WANDB_MODE=offline
 mkdir -p "$SCRATCH_WEIGHTS"
 
 # 4. Set up results directory
@@ -153,8 +156,21 @@ fi
 # Qwen2.5-7B-Instruct     | Qwen/Qwen2.5-7B-Instruct          | true
 # Qwen2.5-Math-7B-Instruct| Qwen/Qwen2.5-Math-7B-Instruct     | true
 # =============================================================================
-MODEL="Qwen/Qwen2.5-7B"
-MODEL_NAME=$(basename "$MODEL")
+MODEL_ID="Qwen/Qwen2.5-7B"
+MODEL_NAME=$(basename "$MODEL_ID")
+
+# Resolve local model path from HuggingFace cache
+# This avoids network calls when using TRANSFORMERS_OFFLINE=1
+# HuggingFace hub format: models--<org>--<repo> (double dash separator)
+MODEL_CACHE_DIR="$SCRATCH_WEIGHTS/hub/models--Qwen--Qwen2.5-7B"
+if [ -d "$MODEL_CACHE_DIR/snapshots" ]; then
+    SNAPSHOT=$(ls "$MODEL_CACHE_DIR/snapshots" | head -1)
+    MODEL="$MODEL_CACHE_DIR/snapshots/$SNAPSHOT"
+    echo "Using cached model: $MODEL"
+else
+    MODEL="$MODEL_ID"
+    echo "Warning: Model not cached at $MODEL_CACHE_DIR, using HuggingFace ID: $MODEL"
+fi
 
 # =============================================================================
 # DATASET OPTIONS:
@@ -175,11 +191,11 @@ KL_ESTIMATOR="k3"               # k1, k2, or k3
 MAX_EPOCHS=1                    # Number of training epochs
 LEARNING_RATE=5e-7              # Actor learning rate
 
-# Batch sizes
+# Batch sizes (optimized for colocate_all_models with H100 80GB)
 TRAIN_BATCH_SIZE=128
-MICRO_TRAIN_BATCH_SIZE=4
+MICRO_TRAIN_BATCH_SIZE=4        # Conservative for memory sharing
 ROLLOUT_BATCH_SIZE=128
-MICRO_ROLLOUT_BATCH_SIZE=16
+MICRO_ROLLOUT_BATCH_SIZE=16     # Conservative for memory sharing
 
 # Generation settings
 TEMPERATURE=1.0
@@ -189,7 +205,7 @@ GENERATE_MAX_LEN=2048
 # vLLM settings (4x H100)
 VLLM_NUM_ENGINES=2
 VLLM_TP_SIZE=2
-VLLM_GPU_UTIL=0.5
+VLLM_GPU_UTIL=0.6               # Reduced from 0.85 for colocate_all_models compatibility
 
 # Checkpointing (~30 min intervals)
 SAVE_STEPS=50
@@ -310,6 +326,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --deepspeed_enable_sleep \
     --zero_stage 3 \
     --bf16 \
+    --packing_samples \
     --gradient_checkpointing \
     --save_steps "$SAVE_STEPS" \
     --save_path "$OUTPUT_DIR" \

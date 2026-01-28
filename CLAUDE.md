@@ -84,18 +84,27 @@ python -m trex.baselines.best_of_n_baseline \
 ```
 
 **SLURM Job Submission:**
+
+Use the sbatch scripts in the `trex/scripts/tamia` folder.
+
 ```bash
-sbatch trex/scripts/run_grpo_baseline.sh
-sbatch trex/scripts/run_bon_baseline.sh
+sbatch trex/scripts/tamia/run_grpo_baseline.sh
+sbatch trex/scripts/tamia/run_bon_baseline.sh
 ```
 
-For SLURM, tasks are assigned to complete nodes. The nodes have 48 cores each and 512GB of available memory. Use one of the following Slurm options:
+For SLURM, tasks are assigned to complete nodes. Use one of the following configurations:
 
-- For a task on a node with an H100 GPU: `--gpus=h100:4`
-- For a task on a node with an H200 GPU: `--gpus=h200:8`
-- For tasks with multiple nodes, use `--gpus-per-nodes=h100:4` or `--gpus-per-nodes=h200:8`.
+| GPU Type | GPUs/Node | Memory | CPUs | SBATCH Options |
+|----------|-----------|--------|------|----------------|
+| H100     | 4         | 500GB  | 48   | `--gres=gpu:h100:4 --mem=480G --cpus-per-task=48` |
+| H200     | 8         | 1TB    | 64   | `--gres=gpu:h200:8 --mem=950G --cpus-per-task=64` |
 
-NOTE: We should always check that we are maximizing our GPU usage before submitting a long job. The Tamia time limit is 24 hours. Beyond that, we should use checkpointing. 
+**IMPORTANT: Compute nodes have NO internet access.** You must:
+1. Download models to the cache on the login node first
+2. Use `HF_HUB_OFFLINE=1` in SLURM scripts
+3. Use `WANDB_MODE=offline` for WandB logging
+
+NOTE: We should always check that we are maximizing our GPU usage before submitting a long job. The Tamia time limit is 24 hours. Beyond that, we should use checkpointing.
 
 Checkpointing should be built into every script that we use for training or evaluation.
 
@@ -103,7 +112,24 @@ Make sure that we export these variables in our SLURM scripts:
 ```bash
 export HF_HOME="$SCRATCH_WEIGHTS"
 export HF_DATASETS_CACHE="$SCRATCH_WEIGHTS"
+export HF_HUB_OFFLINE=1
+export WANDB_MODE=offline
 ```
+
+### Pre-downloading Models
+
+Before running SLURM jobs, download models on the login node:
+```bash
+source venv/bin/activate
+export HF_HOME="/scratch/l/liaidan/model_weights"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-7B')"
+```
+
+### Memory Constraints with `--colocate_all_models`
+
+When using `--colocate_all_models` (recommended for 4-GPU setup), memory is shared between vLLM and DeepSpeed:
+- `VLLM_GPU_UTIL=0.6` is the safe maximum (0.85+ causes OOM on wake-up)
+- Use conservative batch sizes: `MICRO_TRAIN_BATCH_SIZE=4`, `MICRO_ROLLOUT_BATCH_SIZE=16`
 
 ## Key Components
 

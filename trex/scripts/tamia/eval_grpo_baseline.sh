@@ -2,9 +2,9 @@
 
 #SBATCH --job-name=eval-grpo-baseline
 #SBATCH --account=def-bengioy                       
-#SBATCH --cpus-per-task=64                                
-#SBATCH --gres=gpu:h100:4                                     
-#SBATCH --mem=512G                                        
+#SBATCH --cpus-per-task=48
+#SBATCH --gres=gpu:h100:4
+#SBATCH --mem=480G                                        
 #SBATCH --time=24:00:00                                   
 #SBATCH -o /scratch/l/liaidan/t-rex/slurm/eval-grpo-%j.out
 #SBATCH -e /scratch/l/liaidan/t-rex/slurm/eval-grpo-%j.err
@@ -15,7 +15,7 @@
 # =============================================================================
 
 # 1. Load the required modules
-module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust
+module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust cuda/12.6
 
 # 2. Load your environment
 source venv/bin/activate
@@ -26,7 +26,11 @@ SCRATCH_WEIGHTS="/scratch/l/liaidan/model_weights"
 
 export HF_HOME="$SCRATCH_WEIGHTS"
 export HF_DATASETS_CACHE="$SCRATCH_WEIGHTS"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
+export WANDB_API_KEY="8ac57bf9aa5138a9e30d747070d1ebc22b581efc"
+export WANDB_MODE=offline
 mkdir -p "$SCRATCH_WEIGHTS"
 
 # 4. Set up experimental results on scratch
@@ -92,9 +96,9 @@ TEMPS="0.0 0.6 1.0"
 # Output Directory
 OUTPUT_DIR="/scratch/l/liaidan/t-rex/results/eval_grpo/${MODEL_NAME}/${TEST_DATASET}_trained_n${TRAIN_N_SAMPLES}"
 
-# vLLM Settings
-TP_SIZE=2
-GPU_MEM_UTIL=0.90
+# vLLM Settings (optimized to use all 4 GPUs)
+TP_SIZE=4                       # Increased from 2 to use all GPUs
+GPU_MEM_UTIL=0.95               # Increased from 0.90 for better utilization
 
 # =============================================================================
 # EXECUTION
