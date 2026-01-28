@@ -11,6 +11,13 @@ T-REX (Twisted Replica Exchange for Bootstrapping Reasoning) is a research proje
 - **Twisted SMC:** Value function-guided particle filtering for efficient search
 - **Non-Reversible Transport:** Block-Gibbs editing to bridge creative and rigorous distributions
 
+## Context Management
+- See `HIGH_LEVEL_CONTEXT.md` for mathematical specification and algorithm details
+- See `IMPLEMENTATION_PLAN.md` for details of the development roadmap with status. We will make more detailed plans for each item in this plan in separate Markdown files before any implementation is done.
+- See `EXPERIMENTS.md` to keep track of all experiments that have been done. This should contain all details about what experiments have been ran, what hypothesis we are testing with each experiment, and what the results are.
+
+Update these markdown contexts after carrying out actions.
+
 ## Repository Structure
 
 ```
