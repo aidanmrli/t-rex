@@ -24,6 +24,7 @@ from trex.smc.twisted_smc import (
     TwistedSMCConfig,
     TwistedSMC,
 )
+from trex.smc.llm_particle_filter import LLMParticleFilter
 
 __all__ = [
     # Resampling
@@ -40,5 +41,8 @@ __all__ = [
     "compute_twisted_weights",
     "TwistedSMCConfig",
     "TwistedSMC",
+    # LLM Particle Filter
+    "LLMParticleFilter",
 ]
+
 
