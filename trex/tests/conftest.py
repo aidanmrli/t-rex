@@ -225,3 +225,119 @@ def requires_sympy():
 def requires_regex():
     """Skip test if regex module is not available."""
     pytest.importorskip("regex")
+
+
+# =============================================================================
+# SMC Steering Mock Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def mock_output():
+    """Factory for creating mock vLLM completion outputs."""
+    from dataclasses import dataclass
+    
+    @dataclass
+    class MockCompletionOutput:
+        """Mock vLLM completion output."""
+        text: str
+        finish_reason: str = "stop"
+    
+    @dataclass
+    class MockRequestOutput:
+        """Mock vLLM request output."""
+        outputs: list
+        prompt_logprobs: list = None
+        
+        @classmethod
+        def from_text(cls, text: str):
+            return cls(outputs=[MockCompletionOutput(text=text)])
+        
+        @classmethod
+        def from_texts(cls, texts: list):
+            return cls(outputs=[MockCompletionOutput(text=t) for t in texts])
+    
+    return MockRequestOutput
+
+
+@pytest.fixture
+def mock_llm(mock_output):
+    """
+    Mock vLLM LLM class for unit tests.
+    
+    Returns a MagicMock that simulates vLLM's LLM.generate() method.
+    Override generate.return_value to customize outputs.
+    """
+    from unittest.mock import MagicMock
+    
+    llm = MagicMock()
+    # Default: return a single step
+    llm.generate = MagicMock(return_value=[
+        mock_output.from_text("## Step 1: Calculate\n2+2=4\n## Step")
+    ])
+    
+    # Mock tokenizer for chat template
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.apply_chat_template = MagicMock(
+        side_effect=lambda messages, **kwargs: f"[INST] {messages[-1]['content']} [/INST]"
+    )
+    llm.get_tokenizer = MagicMock(return_value=mock_tokenizer)
+    
+    return llm
+
+
+@pytest.fixture
+def mock_reward_model():
+    """
+    Mock RewardModel for unit tests.
+    
+    Returns a MagicMock that simulates RewardModel methods.
+    Override method return values to customize behavior.
+    """
+    import torch
+    from unittest.mock import MagicMock
+    
+    rm = MagicMock()
+    
+    # Default PRM scores (one per particle)
+    rm.get_latest_step_scores = MagicMock(
+        return_value=torch.tensor([0.8, 0.6, 0.9, 0.3])
+    )
+    
+    # Default ORM scores
+    rm.score_orm = MagicMock(return_value=[0.7, 0.5, 0.95, 0.2])
+    
+    # Default PRM scores (list of lists, one per step per text)
+    rm.score_prm = MagicMock(return_value=[[0.8], [0.6], [0.9], [0.3]])
+    
+    # Format methods
+    rm.format_for_prm = MagicMock(
+        side_effect=lambda steps: "<extra_0>".join(steps) + "<extra_0>"
+    )
+    rm.format_for_orm = MagicMock(
+        side_effect=lambda text: text.rstrip() + "<extra_0>"
+    )
+    rm.format_text_for_scoring = MagicMock(
+        side_effect=lambda text: text + "<extra_0>"
+    )
+    
+    # Config
+    rm.prm_config = MagicMock()
+    rm.prm_config.step_separator_token = "<extra_0>"
+    
+    return rm
+
+
+@pytest.fixture
+def mock_smc_config():
+    """Mock SMCSteeringConfig for unit tests."""
+    from trex.baselines.smc_config import SMCSteeringConfig
+    
+    return SMCSteeringConfig(
+        n_particles=4,
+        max_steps=5,
+        temperature=0.7,
+        seed=42,
+        enable_checkpointing=False,
+    )
+
