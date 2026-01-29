@@ -229,10 +229,8 @@ class TestNormalizeWeights:
         with pytest.raises(ValueError):
             normalize_weights(weights)
 
-    def test_supports_batches(self):
-        """Supports batch dimension if implemented."""
-        # Optional: check if implementation supports [batch, particles]
-        pass
+    # NOTE: Batch support test removed - implement when feature is added
+    # Do not leave empty tests that always pass (provides false confidence)
 
 
 # =============================================================================
@@ -268,22 +266,14 @@ class TestComputeESS:
 
         assert torch.isclose(torch.tensor(ess), torch.tensor(expected))
 
-    def test_ess_tensor_properties(self):
-        """ESS calculation happens on same device."""
-        if torch.cuda.is_available():
-            weights = torch.tensor([0.5, 0.5], device="cuda")
-            # This depends on if ESS returns a float or scalar tensor
-            # If tensor, check device
-            pass
+    def test_ess_zero_weights_raises_error(self):
+        """All-zero weights raise ValueError."""
+        weights = torch.tensor([0.0, 0.0, 0.0])
+        with pytest.raises(ValueError):
+            compute_ess(weights)
 
-    def test_gradients(self):
-        """ESS should support gradients if needed (usually detached though)."""
-        weights = torch.tensor([0.5, 0.5], requires_grad=True)
-        ess = compute_ess(weights)
-        # If ess returns a tensor, we can check grad
-        # ess.backward()
-        # assert weights.grad is not None
-        pass
+    # NOTE: Gradient test removed - ESS returns float, not tensor
+    # Implement when/if we need differentiable ESS
 
 
 # =============================================================================

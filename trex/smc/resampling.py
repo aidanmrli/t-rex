@@ -46,13 +46,20 @@ def compute_ess(weights: torch.Tensor) -> float:
     - ESS = 1 means degenerate (one particle dominates)
     
     Args:
-        weights: Normalized weight tensor, shape (n_particles,)
+        weights: Weight tensor, shape (n_particles,). Need not be normalized.
         
     Returns:
         Effective sample size (float between 1 and n_particles)
+        
+    Raises:
+        ValueError: If all weights are zero (cannot normalize)
     """
-    # Ensure weights are normalized
-    w = weights / weights.sum()
+    weight_sum = weights.sum()
+    if weight_sum == 0:
+        raise ValueError("All weights are zero. Cannot compute ESS.")
+    
+    # Normalize weights
+    w = weights / weight_sum
     ess = 1.0 / (w ** 2).sum()
     return ess.item()
 

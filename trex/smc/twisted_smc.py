@@ -35,12 +35,19 @@ class TwistedSMCConfig(SMCConfig):
     
     # Temperature for soft-max style weighting (higher = more greedy)
     temperature: float = 1.0
+    
+    # Whether value function outputs are in log-space (can be negative)
+    # If True: weight_ratio = exp(V_t - V_{t-1})
+    # If False: weight_ratio = V_t / V_{t-1} (V must be in [0, inf))
+    # Per HIGH_LEVEL_CONTEXT.md Section 2.4, twist uses sigmoid so default is False
+    log_space: bool = False
 
 
 def compute_twisted_weights(
     values_t: torch.Tensor,
     values_t_minus_1: torch.Tensor,
     epsilon: float = 1e-8,
+    log_space: bool = False,
 ) -> torch.Tensor:
     """
     Compute twisted importance weight ratios.
@@ -58,22 +65,28 @@ def compute_twisted_weights(
         values_t: Value estimates at current time, shape (n_particles,)
         values_t_minus_1: Value estimates at previous time, shape (n_particles,)
         epsilon: Small value for numerical stability
+        log_space: If True, values are in log-space and we compute exp(V_t - V_{t-1}).
+                   If False, values are in probability space and we compute V_t / V_{t-1}.
+                   Must be explicitly specified - no auto-detection.
         
     Returns:
         Weight ratios tensor, shape (n_particles,)
+        
+    Raises:
+        ValueError: If log_space=False and values contain negative numbers
     """
-    # Handle the case where we're working in probability space (values in [0, 1])
-    # vs log-space (values can be negative)
-    
-    # Check if values look like they're in log-space (can be negative)
-    in_log_space = torch.any(values_t < 0) or torch.any(values_t_minus_1 < 0)
-    
-    if in_log_space:
+    if log_space:
         # Log-space: weight ratio = exp(V_t - V_{t-1})
         # This is numerically stable
         weight_ratios = torch.exp(values_t - values_t_minus_1)
     else:
         # Probability space: weight ratio = V_t / V_{t-1}
+        # Validate that values are non-negative
+        if torch.any(values_t < 0) or torch.any(values_t_minus_1 < 0):
+            raise ValueError(
+                "Values contain negative numbers but log_space=False. "
+                "Set log_space=True if values are in log-space."
+            )
         # Add epsilon to denominator for numerical stability
         denominator = values_t_minus_1 + epsilon
         weight_ratios = values_t / denominator
@@ -164,6 +177,10 @@ class TwistedSMC(ParticleFilter):
         Computes weight ratios based on value improvement and multiplies
         with current weights. Result is normalized.
         
+        NOTE: This method only updates weights. Value state management
+        (_previous_values, _current_values) is handled by step_with_twist()
+        to avoid confusing double-assignment.
+        
         Args:
             current_values: Value estimates at current step
             previous_values: Value estimates at previous step
@@ -176,6 +193,7 @@ class TwistedSMC(ParticleFilter):
             current_values,
             previous_values,
             epsilon=self.config.epsilon,
+            log_space=self.config.log_space,
         )
         
         # Multiply current weights by ratios
@@ -185,18 +203,20 @@ class TwistedSMC(ParticleFilter):
         # Normalize
         new_weights = normalize_weights(new_weights)
         self.set_weights(new_weights)
-        
-        # Store values for next step
-        self._previous_values = previous_values.clone().detach()
-        self._current_values = current_values.clone().detach()
     
     def step_with_twist(self) -> None:
         """
         Single step of Twisted SMC.
         
         1. Compute values for current particles
-        2. Update weights with twist
+        2. Update weights with twist (using previous values)
         3. Resample if ESS is low
+        4. Update value state for next iteration
+        
+        Value State Management:
+        This method is the sole owner of value state transitions.
+        - _previous_values: values from previous step (used for weight ratios)
+        - _current_values: values from current step (becomes previous next step)
         """
         if self.value_function is None:
             raise ValueError("Value function not set.")
@@ -204,11 +224,12 @@ class TwistedSMC(ParticleFilter):
         # Get current values
         current_values = self.compute_values()
         
-        # Get previous values (or initialize to current)
+        # Get previous values (or initialize to current for first step)
+        # First step: ratio = current/current = 1, so weights unchanged
         if self._previous_values is None:
-            self._previous_values = current_values.clone()
-        
-        previous_values = self._previous_values
+            previous_values = current_values.clone().detach()
+        else:
+            previous_values = self._previous_values
         
         # Update weights with twist
         self.update_weights_with_twist(current_values, previous_values)
@@ -217,6 +238,7 @@ class TwistedSMC(ParticleFilter):
         if self.should_resample():
             self.resample()
         
-        # Store current values for next step
-        self._current_values = current_values
-        self._previous_values = current_values.clone()
+        # Update value state for next step:
+        # Current becomes previous for the next iteration
+        self._previous_values = current_values.clone().detach()
+        self._current_values = current_values.detach()

@@ -47,14 +47,22 @@ def generate_temperature_ladder(
         unit_values = t
         
     elif schedule == "geometric":
-        # Geometric spacing: more temperatures at lower betas
-        # Using log-space interpolation
-        # Avoid log(0) by using a small epsilon
-        eps = 1e-6
-        log_min = torch.log(torch.tensor(eps, device=device))
-        log_max = torch.log(torch.tensor(1.0, device=device))
-        log_values = log_min + (log_max - log_min) * t
-        unit_values = torch.exp(log_values)
+        # True geometric spacing: beta_i = min_beta * ratio^i
+        # where ratio = (max_beta / min_beta)^(1 / (n-1))
+        # This gives more temperatures at lower betas
+        
+        # Handle edge case where min_beta is 0
+        if min_beta == 0.0:
+            # Can't do true geometric with 0, use small epsilon
+            effective_min = 1e-6
+            ratio = (max_beta / effective_min) ** (1.0 / (num_temperatures - 1))
+            betas = effective_min * (ratio ** torch.arange(num_temperatures, device=device, dtype=torch.float32))
+            betas[0] = min_beta  # Ensure first value is exactly min_beta
+            return betas
+        else:
+            ratio = (max_beta / min_beta) ** (1.0 / (num_temperatures - 1))
+            betas = min_beta * (ratio ** torch.arange(num_temperatures, device=device, dtype=torch.float32))
+            return betas
         
     elif schedule == "quadratic":
         # Quadratic spacing: more temperatures at lower betas

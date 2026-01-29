@@ -93,15 +93,30 @@ class TestComputeTwistedWeights:
 
         assert torch.allclose(weights, torch.ones_like(weights))
 
-    def test_negative_values_handled(self):
-        """Handles negative log-probabilities or values gracefully."""
+    def test_negative_values_raises_without_log_space(self):
+        """Negative values raise error when log_space=False (default)."""
+        # In probability space, values should be non-negative
+        values_t = torch.tensor([-1.0, -2.0, -3.0])
+        values_t_minus_1 = torch.tensor([-2.0, -2.0, -2.0])
+
+        with pytest.raises(ValueError, match="log_space=True"):
+            compute_twisted_weights(values_t, values_t_minus_1, log_space=False)
+
+    def test_negative_values_handled_with_log_space(self):
+        """Handles negative log-probabilities when log_space=True."""
         # In log-space, values can be negative
         values_t = torch.tensor([-1.0, -2.0, -3.0])
         values_t_minus_1 = torch.tensor([-2.0, -2.0, -2.0])
 
-        weights = compute_twisted_weights(values_t, values_t_minus_1)
+        # With log_space=True, should work correctly
+        weights = compute_twisted_weights(values_t, values_t_minus_1, log_space=True)
 
-        # The first value improved, others stayed or got worse
+        # The first value improved (-1 > -2), so weight > 1
+        # exp(-1 - (-2)) = exp(1) ≈ 2.718
+        assert weights[0] > 1.0
+        # Others stayed same or got worse
+        assert torch.isclose(weights[1], torch.tensor(1.0))  # exp(0) = 1
+        assert weights[2] < 1.0  # exp(-1) ≈ 0.368
         assert not torch.any(torch.isnan(weights))
 
     def test_preserves_tensor_device(self):

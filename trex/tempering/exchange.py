@@ -19,26 +19,37 @@ def compute_acceptance_ratio(
     beta_target: Union[float, torch.Tensor],
 ) -> float:
     """
-    Compute the Metropolis-Hastings acceptance ratio for replica exchange.
+    Compute one half of the replica exchange acceptance ratio.
     
-    For swapping replicas between temperatures, the acceptance ratio is:
-        α = min(1, (φ(x')/φ(x))^β)
+    In replica exchange (parallel tempering), when considering swapping
+    replicas at positions i and j with temperatures β_i and β_j:
     
-    Where:
-    - φ(x) is the value/reward of current state
-    - φ(x') is the value/reward of proposed state
-    - β is the inverse temperature (0=hot, 1=cold)
+        α_combined = α_i × α_j
+        
+    where each α is computed as:
+        α = min(1, (φ_proposed / φ_current)^β)
     
-    At high temperature (β≈0), all moves are accepted (exploration).
-    At low temperature (β≈1), only improving moves are accepted (exploitation).
+    This function computes a single α term. The full replica exchange
+    acceptance is the product of two such terms (see swap_replicas).
+    
+    The combined formula is equivalent to the standard replica exchange:
+        α = min(1, (φ_j/φ_i)^(β_i - β_j))
+    
+    Parameters:
+    - φ(x) is the value/reward of current state, must be in [0, 1]
+    - φ(x') is the value/reward of proposed state, must be in [0, 1]
+    - β is the inverse temperature (0=hot/explore, 1=cold/exploit)
     
     Args:
-        phi_x: Value of current state
-        phi_x_prime: Value of proposed state
-        beta_target: Target inverse temperature
+        phi_x: Value of current state, must be in [0, 1]
+        phi_x_prime: Value of proposed state, must be in [0, 1]
+        beta_target: Inverse temperature at this position
         
     Returns:
         Acceptance probability α ∈ [0, 1]
+        
+    Raises:
+        ValueError: If phi values are negative (undefined per spec)
     """
     # Convert to float if tensor
     if isinstance(phi_x, torch.Tensor):
@@ -48,7 +59,14 @@ def compute_acceptance_ratio(
     if isinstance(beta_target, torch.Tensor):
         beta_target = beta_target.item()
     
-    # Handle β = 0 case (always accept)
+    # Validate phi values - must be non-negative per spec (φ ∈ [0, 1])
+    if phi_x < 0 or phi_x_prime < 0:
+        raise ValueError(
+            f"φ values must be non-negative (in [0, 1]). "
+            f"Got phi_x={phi_x}, phi_x_prime={phi_x_prime}"
+        )
+    
+    # Handle β = 0 case (always accept - exploration mode)
     if beta_target == 0.0:
         return 1.0
     
@@ -56,11 +74,17 @@ def compute_acceptance_ratio(
     if phi_x == phi_x_prime:
         return 1.0
     
-    # Avoid division by zero
-    if phi_x <= 0:
-        phi_x = 1e-10
-    if phi_x_prime <= 0:
-        phi_x_prime = 1e-10
+    # Handle zero current value: φ(x) = 0 means constraint not satisfied
+    # If we're at a bad state (φ=0), we want to accept any non-zero proposal
+    if phi_x == 0.0:
+        # If proposed is also 0, accept with prob 1 (both equally bad)
+        # If proposed > 0, ratio is infinite, so accept with prob 1
+        return 1.0
+    
+    # Handle zero proposed value: φ(x') = 0 means proposed violates constraint
+    # Should be rejected (ratio = 0)
+    if phi_x_prime == 0.0:
+        return 0.0
     
     # Compute ratio
     ratio = phi_x_prime / phi_x

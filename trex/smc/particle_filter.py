@@ -11,7 +11,7 @@ import torch
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Literal, Union
-from copy import deepcopy
+from copy import copy
 
 from trex.smc.resampling import (
     multinomial_resampling,
@@ -200,10 +200,13 @@ class ParticleFilter:
             raise ValueError(f"Unknown resampling method: {self.config.resampling_method}")
         
         # Create new particle list by copying selected particles
+        # Use tolist() for single CPU sync instead of N .item() calls
+        # Use shallow copy - Particle contains str (immutable), float, and dict
         old_particles = self.particles
+        indices_list = indices.tolist()
         self.particles = [
-            deepcopy(old_particles[idx.item()])
-            for idx in indices
+            copy(old_particles[idx])
+            for idx in indices_list
         ]
         
         # Reset to uniform weights
@@ -226,9 +229,14 @@ class ParticleFilter:
         
         Returns:
             Particle with maximum weight
+            
+        Raises:
+            ValueError: If particles not initialized
         """
         if not self.particles:
             raise ValueError("No particles initialized.")
+        if self._weights is None:
+            raise ValueError("Weights not initialized. Call initialize() first.")
         
         best_idx = self._weights.argmax().item()
         return self.particles[best_idx]
@@ -239,9 +247,14 @@ class ParticleFilter:
         
         Returns:
             A randomly sampled particle (weighted)
+            
+        Raises:
+            ValueError: If particles or weights not initialized
         """
         if not self.particles:
             raise ValueError("No particles initialized.")
+        if self._weights is None:
+            raise ValueError("Weights not initialized. Call initialize() first.")
         
         idx = torch.multinomial(self._weights, 1).item()
         return self.particles[idx]

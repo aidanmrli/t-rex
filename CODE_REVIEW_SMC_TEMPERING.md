@@ -350,9 +350,37 @@ The junior engineer has produced **working code that passes tests**, but the imp
 
 ## Action Items
 
-- [ ] Fix state management in `step_with_twist` - clarify which method owns value storage
-- [ ] Replace log-space auto-detection with explicit `log_space: bool` config parameter
-- [ ] Add proper validation for φ values in `compute_acceptance_ratio`
-- [ ] Fix uninitialized `_weights` check in `sample_particle`
-- [ ] Implement or remove placeholder tests
-- [ ] Create follow-up tickets for efficiency improvements
+- [x] Fix state management in `step_with_twist` - clarify which method owns value storage
+  - ✅ `step_with_twist()` is now sole owner of value state transitions
+  - ✅ Removed redundant state updates from `update_weights_with_twist()`
+  - ✅ Added clear docstrings explaining the ownership
+- [x] Replace log-space auto-detection with explicit `log_space: bool` config parameter
+  - ✅ Added `log_space: bool = False` to `TwistedSMCConfig`
+  - ✅ Updated `compute_twisted_weights()` to require explicit parameter
+  - ✅ Now raises `ValueError` if negative values detected without `log_space=True`
+- [x] Add proper validation for φ values in `compute_acceptance_ratio`
+  - ✅ Now raises `ValueError` for negative φ (undefined per spec)
+  - ✅ Properly handles φ=0: current=0 accepts any proposal, proposed=0 rejects
+  - ✅ Updated docstring to describe replica exchange context correctly
+- [x] Fix uninitialized `_weights` check in `sample_particle`
+  - ✅ Both `sample_particle()` and `get_best_particle()` now check for `_weights is None`
+  - ✅ Raises clear `ValueError` instead of cryptic `AttributeError`
+- [x] Implement or remove placeholder tests
+  - ✅ Removed empty `test_supports_batches` placeholder
+  - ✅ Removed empty `test_gradients` placeholder  
+  - ✅ Added real test `test_ess_zero_weights_raises_error`
+  - ✅ Updated `test_negative_values_handled` to test both log_space modes
+- [x] Create follow-up tickets for efficiency improvements
+  - ✅ Fixed: Replaced `deepcopy` with `copy` in resampling loop
+  - ✅ Fixed: Replaced N `.item()` calls with single `.tolist()` call
+  - ✅ Fixed: ESS now validates zero-sum weights before normalization
+  - ✅ Fixed: Geometric temperature schedule now produces true geometric spacing
+
+---
+
+## Post-Fix Status
+
+**All tests passing:** 90 passed, 5 skipped (GPU tests on CPU machine)
+
+All critical and moderate issues from the code review have been addressed.
+
