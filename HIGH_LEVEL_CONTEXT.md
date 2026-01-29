@@ -204,7 +204,7 @@ Repeat until all particles reach a terminal state (e.g., \boxed{answer} or max t
  $$x^{(i)}_t \sim p_\theta(\cdot | x^{(i)}_{t-1})$$
 
 **2. Weighting (Scoring):** Score the newly expanded particle using the Reward Model.
-$$w^{(i)}_t = \text{PRM}(x^{(i)}_t)$$
+$$w_t = w_{t-1} × PRM(step_t)$$
 (Crucially, they often use the raw PRM probability or a learned value estimate.)
 
 **3. Resampling (The "Roulette"):** This is the critical step. You select which particles survive to the next round based on their weights.
