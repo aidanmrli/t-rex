@@ -1,6 +1,6 @@
 # Implementation Plan for T-REX
 
-**Last Updated:** 2026-01-28
+**Last Updated:** 2026-01-29
 
 **NOTE:** We should always update this plan with our progress once we have implemented something and it works.
 
@@ -25,6 +25,7 @@ We should have three abstract components:
 | **Math Grading** | `trex/eval/grader.py` | Complete | Symbolic equality, numeric comparison |
 | **Datasets** | `trex/data/*.jsonl` | Complete | GSM8K, MATH, MATH-500 |
 | **SLURM Scripts** | `trex/scripts/*.sh` | Complete | Auto-requeue, checkpointing |
+| **Standard SMC Steering** | `trex/baselines/smc_steering_baseline.py` | Complete | PRM/ORM guided, SLURM checkpointing |
 
 ### 🔄 Ready for Testing
 
@@ -36,7 +37,6 @@ We should have three abstract components:
 
 | Component | Priority | Complexity | Dependencies |
 |-----------|----------|------------|--------------|
-| Standard SMC Steering (Rollout Roulette) | High | Medium | Value head, particle filtering |
 | Twisted SMC (TSMC) | High | Medium | Value head training, SMC infrastructure |
 | Parallel Tempering | Medium | High | Multiple temperature chains, exchange mechanism |
 | Transport Mechanisms | Medium | High | Critic network, Block-Gibbs editor |
@@ -90,15 +90,15 @@ We should have three abstract components:
 ```
 
 **Implementation:**
-- [ ] Create `trex/smc/particle_filter.py` - Core SMC particle filtering logic
-- [ ] Create `trex/smc/resampling.py` - Resampling strategies (multinomial, systematic, stratified)
-- [ ] Create `trex/baselines/smc_steering_baseline.py` - Main baseline runner
-- [ ] Integrate with existing MathVerifier for scoring
+- [x] Create `trex/smc/particle_filter.py` - Core SMC particle filtering logic
+- [x] Create `trex/smc/resampling.py` - Resampling strategies (multinomial, systematic, stratified)
+- [x] Create `trex/baselines/smc_steering_baseline.py` - Main baseline runner
+- [x] Integrate with existing MathVerifier for scoring
 
 **Key Design Decisions:**
-1. **Step Granularity:** Generate until `\n` (one reasoning step per expansion)
-2. **Scoring:** Use final answer correctness as binary reward (no PRM initially)
-3. **Resampling Temperature:** Softmax temperature τ for controlling diversity
+1. **Step Granularity:** Generate until `## Step N:` (explicit step delimiter)
+2. **Scoring:** Use PRM for intermediate steps, ORM for final selection
+3. **Resampling:** Systematic resampling triggered by ESS threshold
 
 **Configuration Dataclass:**
 ```python
@@ -510,7 +510,7 @@ Phase 3: Online Learning (Self-Distillation)
 1. ✅ Best-of-N baseline - DONE
 2. ✅ GRPO baseline - DONE
 3. ✅ PPO baseline - DONE (ready for testing)
-4. [ ] Standard SMC Steering baseline
+4. ✅ Standard SMC Steering baseline - DONE
 
 ### Sprint 2: TSMC Foundation (Week 3-4)
 5. [ ] Value head architecture

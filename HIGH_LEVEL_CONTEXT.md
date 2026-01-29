@@ -209,14 +209,14 @@ $$w_t = w_{t-1} × PRM(step_t)$$
 
 **3. Resampling (The "Roulette"):** This is the critical step. You select which particles survive to the next round based on their weights.
 * Normalize weights: $\tilde{w}^{(i)}_t = \frac{e^{w^{(i)}_t / \tau}}{\sum_j e^{w^{(j)}_t / \tau}}$ (Softmax with temperature $\tau$ is common, or just linear normalization).
-* Multinomial Resampling: Sample $N$ indices from the categorical distribution defined by $\tilde{w}$. 
+* Resampling Strategy: Sample $N$ indices from the distribution defined by $\tilde{w}$ (e.g., Systematic or Multinomial resampling). 
 * Replace the current population $S_t$ with the resampled population. High-scoring particles are duplicated; low-scoring ones are dropped.
 
 Phase 3: Final Selection
 
 Once all particles are finished, select the final answer.
 - **Majority Voting:** Most common final answer among the particles.
-- **Best-of-N:** The particle with the highest final PRM score.
+- **Best-of-N:** The particle with the highest ORM score.
 
 #### **Twisted SMC (Ours, No Parallel Temperatures):** Learning the twist with a single swarm at one temperature. Tests the value of Parallel Exploration. Based on Feng et al.
 
