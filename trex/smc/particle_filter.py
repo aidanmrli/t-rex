@@ -11,7 +11,7 @@ import torch
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Literal, Union
-from copy import copy
+from copy import deepcopy
 
 from trex.smc.resampling import (
     multinomial_resampling,
@@ -205,7 +205,7 @@ class ParticleFilter:
         old_particles = self.particles
         indices_list = indices.tolist()
         self.particles = [
-            copy(old_particles[idx])
+            deepcopy(old_particles[idx])
             for idx in indices_list
         ]
         
