@@ -35,10 +35,38 @@ export WANDB_MODE=offline
 mkdir -p /scratch/l/liaidan/t-rex/slurm
 mkdir -p /scratch/l/liaidan/t-rex/results
 
+# =============================================================================
+# MODEL OPTIONS:
+# -----------------------------------------------------------------------------
+# Model Name                                                  | Path                             
+# -----------------------------------------------------------------------------
+# Qwen2.5-7B (Base)                                           | Qwen2.5-7B
+# Qwen2.5-Math-PRM-7B                                         | Qwen2.5-Math-PRM-7B              
+# gemma-3-4b-pt (pre-trained, no instruction tuning)          | gemma-3-4b-pt                        | false
+# gemma-3-12b-pt (pre-trained, no instruction tuning)         | gemma-3-12b-pt                        | false
+# =============================================================================
+GENERATOR_MODEL_ID="Qwen2.5-7B"
+REWARD_MODEL_ID="Qwen2.5-Math-PRM-7B"
+
+# Resolve local model path from HuggingFace cache
+# This avoids network calls when using TRANSFORMERS_OFFLINE=1
+MODEL_CACHE_DIR="$SCRATCH_WEIGHTS/$MODEL_ID"
+
+# =============================================================================
+# DATASET OPTIONS:
+# -----------------------------------------------------------------------------
+# Dataset   | Train Path                      | Eval Path
+# -----------------------------------------------------------------------------
+# gsm8k     | trex/data/gsm8k_train.jsonl     | trex/data/gsm8k_platinum_test.jsonl
+# math      | trex/data/math_train.jsonl      | trex/data/math500_test.jsonl
+# =============================================================================
+DATASET="gsm8k"
+DATASET_PATH="trex/data/gsm8k_platinum_test.jsonl"
+EVAL_DATA="trex/data/gsm8k_platinum_test.jsonl"
+
 # Default parameters (can be overridden via environment variables)
-export GENERATOR_MODEL_PATH="${GENERATOR_MODEL_PATH:-Qwen/Qwen2.5-7B}"
-export REWARD_MODEL_PATH="${REWARD_MODEL_PATH:-Qwen/Qwen2.5-Math-PRM-7B}"
-export DATASET_PATH="${DATASET_PATH:-trex/data/gsm8k_platinum_test.jsonl}"
+export GENERATOR_MODEL_PATH="${SCRATCH_WEIGHTS}/${GENERATOR_MODEL_ID}"
+export REWARD_MODEL_PATH="${SCRATCH_WEIGHTS}/${REWARD_MODEL_ID}"
 export N_PARTICLES="${N_PARTICLES:-16}"
 export MAX_SMC_ITERATIONS="${MAX_SMC_ITERATIONS:-20}"
 export MAX_REASONING_STEPS="${MAX_REASONING_STEPS:-15}"

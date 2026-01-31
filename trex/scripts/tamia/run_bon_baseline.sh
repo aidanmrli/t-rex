@@ -54,20 +54,15 @@ fi
 # =============================================================================
 # MODEL OPTIONS:
 # -----------------------------------------------------------------------------
-# Model Name              | Path                              | Chat Template
+# Model Name                                                  | Path                             
 # -----------------------------------------------------------------------------
-# Qwen2.5-7B (Base)       | Qwen/Qwen2.5-7B                   | false
-# Qwen3-8B (Base)         | Qwen/Qwen3-8B-Base                | false
-# Qwen2.5-7B-Instruct     | Qwen/Qwen2.5-7B-Instruct          | true
-# Qwen2.5-Math-7B-Instruct| Qwen/Qwen2.5-Math-7B-Instruct     | true
+# Qwen2.5-7B (Base)                                           | Qwen2.5-7B
+# Qwen2.5-Math-PRM-7B                                         | Qwen2.5-Math-PRM-7B              
+# gemma-3-4b-pt (pre-trained, no instruction tuning)          | gemma-3-4b-pt                        | false
+# gemma-3-12b-pt (pre-trained, no instruction tuning)         | gemma-3-12b-pt                        | false
 # =============================================================================
-# NOTE: Base models do NOT have chat templates. Set APPLY_CHAT_TEMPLATE=false.
-#       Instruct models require chat templates. Set APPLY_CHAT_TEMPLATE=true.
-# =============================================================================
-
-MODEL="Qwen/Qwen2.5-7B"
-# Extracts the model name from the path (e.g., Qwen2.5-7B)
-MODEL_NAME=$(basename "$MODEL")
+MODEL_ID="Qwen2.5-7B"
+MODEL_NAME=$(basename "$MODEL_ID")
 
 # =============================================================================
 # DATASET OPTIONS:

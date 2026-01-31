@@ -155,20 +155,19 @@ fi
 # =============================================================================
 # MODEL OPTIONS:
 # -----------------------------------------------------------------------------
-# Model Name              | Path                              | Chat Template
+# Model Name                                                  | Path                             
 # -----------------------------------------------------------------------------
-# Qwen2.5-7B (Base)       | Qwen/Qwen2.5-7B                   | false
-# Qwen3-8B (Base)         | Qwen/Qwen3-8B-Base                | false
-# Qwen2.5-7B-Instruct     | Qwen/Qwen2.5-7B-Instruct          | true
-# Qwen2.5-Math-7B-Instruct| Qwen/Qwen2.5-Math-7B-Instruct     | true
+# Qwen2.5-7B (Base)                                           | Qwen2.5-7B
+# Qwen2.5-Math-PRM-7B                                         | Qwen2.5-Math-PRM-7B              
+# gemma-3-4b-pt (pre-trained, no instruction tuning)          | gemma-3-4b-pt                        | false
+# gemma-3-12b-pt (pre-trained, no instruction tuning)         | gemma-3-12b-pt                        | false
 # =============================================================================
-MODEL_ID="Qwen/Qwen2.5-7B"
+MODEL_ID="Qwen2.5-7B"
 MODEL_NAME=$(basename "$MODEL_ID")
 
 # Resolve local model path from HuggingFace cache
 # This avoids network calls when using TRANSFORMERS_OFFLINE=1
-# HuggingFace hub format: models--<org>--<repo> (double dash separator)
-MODEL_CACHE_DIR="$SCRATCH_WEIGHTS/hub/models--Qwen--Qwen2.5-7B"
+MODEL_CACHE_DIR="$SCRATCH_WEIGHTS/Qwen2.5-7B"
 if [ -d "$MODEL_CACHE_DIR/snapshots" ]; then
     SNAPSHOT=$(ls "$MODEL_CACHE_DIR/snapshots" | head -1)
     MODEL="$MODEL_CACHE_DIR/snapshots/$SNAPSHOT"
