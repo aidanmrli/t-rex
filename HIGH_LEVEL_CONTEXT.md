@@ -178,6 +178,8 @@ We focus on mathematical reasoning tasks where "lookahead" is critical:
 #### **PPO and GRPO:** KL penalty $\beta=0.01 \dots 0.05$.
 
 #### **Standard SMC Steering:** Using a process reward model. Similar to Puri et al. 
+**Status:** ✅ Implemented in `trex/baselines/smc_steering_baseline.py` using `Qwen/Qwen2.5-Math-PRM-7B`.
+
 Baseline Implementation: Rollout Roulette (Puri et al., 2025) This baseline uses Sequential Monte Carlo (SMC) (specifically Particle Filtering) to perform "inference-time compute scaling." Instead of a single beam search or independent sampling, it maintains a population of partial solutions, scores them, and re-allocates compute to the most promising ones. Below is the precise algorithm and implementation details.
 
 ##### 1. Core Components

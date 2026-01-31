@@ -125,11 +125,27 @@ class RewardModel:
         Returns:
             Formatted string with separator tokens between/after steps
             
+        Note:
+            If steps is empty, returns just the separator token. This is
+            valid but unusual - callers should typically ensure at least
+            one step is present before calling this method.
+            
         Example:
             >>> steps = ["## Step 1: Add\\n2+2=4", "## Step 2: Verify\\nCheck 4"]
             >>> formatted = rm.format_for_prm(steps)
             >>> # Returns: "## Step 1: Add\\n2+2=4<extra_0>## Step 2: Verify\\nCheck 4<extra_0>"
         """
+        import warnings
+        
+        if not steps:
+            warnings.warn(
+                "format_for_prm called with empty steps list. "
+                "This returns just a separator token, which may produce "
+                "unexpected PRM scores. Consider checking for empty input upstream.",
+                UserWarning,
+                stacklevel=2
+            )
+        
         separator = self.prm_config.step_separator_token
         return separator.join(steps) + separator
     

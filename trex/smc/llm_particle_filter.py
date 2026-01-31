@@ -127,9 +127,14 @@ class LLMParticleFilter(ParticleFilter):
             Text with step header injected if needed
         """
         next_step = self._get_next_step_number(text)
-        # Only inject if the text doesn't already end with a step header
         stripped = text.rstrip()
-        if not stripped.endswith(":") or not self.STEP_PATTERN.search(stripped[-20:]):
+        
+        # Check if the last line contains a step header pattern
+        # This is more robust than checking just the last N characters
+        last_line = stripped.split('\n')[-1] if '\n' in stripped else stripped
+        
+        # Only inject if the last line doesn't already have a step header
+        if not self.STEP_PATTERN.search(last_line):
             return text + f"\n\n## Step {next_step}:"
         return text
     
@@ -161,8 +166,8 @@ class LLMParticleFilter(ParticleFilter):
         if self.BOXED_PATTERN.search(text):
             return True
         
-        # Hit max tokens
-        if len(text) > self.config.max_total_tokens:
+        # Hit max characters (not tokens - character counting is faster during generation)
+        if len(text) > self.config.max_total_chars:
             return True
         
         # Hit max reasoning steps
@@ -311,14 +316,31 @@ class LLMParticleFilter(ParticleFilter):
         Returns:
             True if there are particles still generating, False if all finished
         """
+        import warnings
+        
         # Expand particles (generate next step)
         should_continue = self.expand_particles()
         
         # Get PRM scores for the latest step
         step_scores = self.score_particles()
         
-        # Avoid all-zero weights (add small epsilon)
-        step_scores = step_scores + 1e-8
+        # Check for degenerate case: all PRM scores are zero
+        # This means the PRM thinks ALL particles are completely wrong.
+        # Continuing with uniform weights would be random - better to warn and stop.
+        if torch.all(step_scores == 0):
+            warnings.warn(
+                f"All PRM scores are zero at SMC iteration {self._smc_iteration}. "
+                "This indicates all particles are considered completely wrong by the PRM. "
+                "Possible causes: degenerate particles, PRM misbehavior, or formatting issues. "
+                "Terminating SMC early - check particle content for debugging.",
+                UserWarning,
+                stacklevel=2
+            )
+            # Mark all particles as finished and return False to terminate
+            for p in self.particles:
+                p.metadata["finished"] = True
+                p.metadata["degenerate_termination"] = True
+            return False
         
         # MULTIPLICATIVE weight update: w_t = w_{t-1} × PRM(step_t)
         current_weights = self.get_weights()
@@ -327,7 +349,7 @@ class LLMParticleFilter(ParticleFilter):
         self.set_weights(new_weights)
         self.normalize_weights()
         
-        # Resample if ESS is low
+        # Resample if needed, (end of reasoning step or ESS is low)
         if self.should_resample():
             self.resample()
         

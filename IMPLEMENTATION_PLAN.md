@@ -83,42 +83,30 @@ We should have three abstract components:
 ```
 1. Initialize N particles with prompt
 2. For each step t:
-   a. Expansion: Generate next "step" (until \n) for each particle
+   a. Expansion: Generate next "step" (until \n or ## Step) for each particle
    b. Weighting: Score particles using Process Reward Model (PRM)
-   c. Resampling: Multinomial resampling proportional to weights
-3. Final Selection: Best-of-N or majority voting
+   c. Resampling: Multinomial/Systematic resampling proportional to weights
+3. Final Selection: Best-of-N (ORM) or majority voting
 ```
 
-**Implementation:**
-- [x] Create `trex/smc/particle_filter.py` - Core SMC particle filtering logic
-- [x] Create `trex/smc/resampling.py` - Resampling strategies (multinomial, systematic, stratified)
-- [x] Create `trex/baselines/smc_steering_baseline.py` - Main baseline runner
-- [x] Integrate with existing MathVerifier for scoring
+**Implementation Status:** ✅ Complete
 
-**Key Design Decisions:**
-1. **Step Granularity:** Generate until `## Step N:` (explicit step delimiter)
-2. **Scoring:** Use PRM for intermediate steps, ORM for final selection
-3. **Resampling:** Systematic resampling triggered by ESS threshold
+**Key Components Implemented:**
+- **SMC Engine:** `LLMParticleFilter` extending base `ParticleFilter` to handle LLM generation and PRM scoring.
+- **Reward Modeling:** `RewardModel` wrapper for `Qwen/Qwen2.5-Math-PRM-7B` supporting both PRM (step-wise) and ORM (final) scoring.
+- **Step Detection:** Regex-based detection of `## Step N:` patterns.
+- **Checkpointing:** Full SLURM-compatible checkpointing (state + particles).
+- **Configuration:** `SMCSteeringConfig` for easy experimentation.
 
-**Configuration Dataclass:**
-```python
-@dataclass
-class SMCConfig:
-    n_particles: int = 16          # Number of parallel particles
-    max_steps: int = 20            # Max reasoning steps
-    resampling_strategy: str = "multinomial"  # multinomial, systematic, stratified
-    resampling_temperature: float = 1.0
-    step_delimiter: str = "\n"     # What defines a "step"
-    final_selection: str = "best"  # best, majority
-```
-
-**Files to Create:**
-- `trex/smc/__init__.py`
-- `trex/smc/particle_filter.py`
-- `trex/smc/resampling.py`
-- `trex/baselines/smc_steering_baseline.py`
-- `trex/baselines/smc_config.py`
-- `trex/scripts/run_smc_baseline.sh`
+**Files Created:**
+- `trex/baselines/smc_steering_baseline.py` - Main baseline runner
+- `trex/baselines/smc_config.py` - Configuration classes
+- `trex/smc/llm_particle_filter.py` - LLM-aware particle filter
+- `trex/models/reward_model.py` - PRM/ORM wrapper
+- `trex/models/prm_config.py` - PRM token configuration
+- `trex/scripts/run_smc_baseline.sh` - Execution script
+- `trex/smc/particle_filter.py` - Core logic
+- `trex/smc/resampling.py` - Resampling logic
 
 ---
 
@@ -209,8 +197,8 @@ class ValueTrainingConfig:
 - Twisted SMC: Weight by value ratio `w_t = ψ(x_{1:t}) / ψ(x_{1:t-1})`
 
 **Implementation:**
-- [ ] Extend `trex/smc/particle_filter.py` to support twist-based weighting
-- [ ] Create `trex/smc/twisted_smc.py` - TSMC-specific logic
+- [x] Extend `trex/smc/particle_filter.py` to support twist-based weighting
+- [x] Create `trex/smc/twisted_smc.py` - TSMC-specific logic
 - [ ] Create `trex/baselines/tsmc_baseline.py` - Evaluation runner
 
 **Weight Computation:**
@@ -567,10 +555,12 @@ tests/
 ├── test_smc/
 │   ├── test_particle_filter.py
 │   ├── test_resampling.py
-│   └── test_twisted_smc.py
+│   ├── test_twisted_smc.py
+│   └── test_llm_particle_filter.py
 ├── test_models/
 │   ├── test_value_head.py
-│   └── test_critic_head.py
+│   ├── test_critic_head.py
+│   └── test_reward_model.py
 ├── test_tempering/
 │   ├── test_temperature_ladder.py
 │   └── test_exchange.py

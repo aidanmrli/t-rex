@@ -51,14 +51,17 @@ class TestRewardModelFormatting:
         assert formatted.endswith("<extra_0>")
     
     def test_format_for_prm_handles_empty_input(self):
-        """Empty input should return just a separator token."""
+        """Empty input should return just a separator token with a warning."""
         from trex.models.reward_model import RewardModel
         
         rm = RewardModel("dummy_path", load_model=False)
         rm.prm_config = QWEN_PRM_CONFIG
         
         steps = []
-        formatted = rm.format_for_prm(steps)
+        
+        # Should emit a warning about empty input
+        with pytest.warns(UserWarning, match="empty steps list"):
+            formatted = rm.format_for_prm(steps)
         
         assert formatted == "<extra_0>"
     

@@ -183,11 +183,11 @@ class TestSMCWeighting:
         assert mock_reward_model.format_text_for_scoring.called
         assert mock_reward_model.get_latest_step_scores.called
     
-    def test_epsilon_added_to_avoid_zero_weights(self, mock_llm, mock_reward_model, mock_smc_config, mock_output):
-        """Epsilon should be added to prevent zero weights."""
+    def test_all_zero_scores_emit_warning_and_terminate(self, mock_llm, mock_reward_model, mock_smc_config, mock_output):
+        """All-zero PRM scores should emit a warning and terminate early."""
         from trex.smc.llm_particle_filter import LLMParticleFilter
         
-        # Return all zeros
+        # Return all zeros - degenerate case
         mock_reward_model.get_latest_step_scores.return_value = torch.tensor([0.0, 0.0, 0.0, 0.0])
         mock_llm.generate.return_value = [
             mock_output.from_text("step content")
@@ -197,12 +197,17 @@ class TestSMCWeighting:
         pf = LLMParticleFilter(mock_smc_config, mock_llm, mock_reward_model)
         pf.initialize("prompt")
         
-        # Should not raise even with zero scores
-        pf.step()
+        # Should emit warning about degenerate state
+        with pytest.warns(UserWarning, match="All PRM scores are zero"):
+            result = pf.step()
         
-        # Weights should be positive (epsilon added)
-        weights = pf.get_weights()
-        assert torch.all(weights > 0)
+        # Should return False to terminate
+        assert result is False
+        
+        # All particles should be marked as finished with degenerate flag
+        for particle in pf.particles:
+            assert particle.metadata.get("finished") is True
+            assert particle.metadata.get("degenerate_termination") is True
     
     def test_multiplicative_weight_update(self, mock_llm, mock_reward_model, mock_smc_config, mock_output):
         """Verify weights are updated multiplicatively: w_t = w_{t-1} × PRM(step_t)."""
@@ -397,3 +402,106 @@ class TestSMCLoop:
         assert "n_particles" in summary
         assert "n_finished" in summary
         assert summary["n_particles"] == mock_smc_config.n_particles
+
+
+class TestSequentialStepNumbering:
+    """
+    Integration tests for sequential step numbering across expansions.
+    
+    CRITICAL: Step mis-numbering (e.g., Step 1, Step 1, Step 3) could confuse
+    the PRM and lead to incorrect scoring. These tests verify that step
+    injection logic maintains proper sequential numbering.
+    """
+    
+    def test_step_header_injection_starts_at_one(self):
+        """First step should be numbered 1."""
+        from trex.smc.llm_particle_filter import LLMParticleFilter
+        
+        with patch('trex.smc.llm_particle_filter.LLMParticleFilter.__init__',
+                   lambda self, *args, **kwargs: None):
+            pf = LLMParticleFilter.__new__(LLMParticleFilter)
+            pf.STEP_HEADER_PATTERN = re.compile(r"## Step (\d+):")
+            pf.STEP_PATTERN = re.compile(r"## Step \d+:")
+            
+            # Prompt with no steps yet
+            prompt = "Solve: What is 2+2?"
+            result = pf._inject_step_header(prompt)
+            
+            assert "## Step 1:" in result
+    
+    def test_step_header_injection_sequential(self):
+        """Injected steps should be sequential: 1, 2, 3, etc."""
+        from trex.smc.llm_particle_filter import LLMParticleFilter
+        
+        with patch('trex.smc.llm_particle_filter.LLMParticleFilter.__init__',
+                   lambda self, *args, **kwargs: None):
+            pf = LLMParticleFilter.__new__(LLMParticleFilter)
+            pf.STEP_HEADER_PATTERN = re.compile(r"## Step (\d+):")
+            pf.STEP_PATTERN = re.compile(r"## Step \d+:")
+            
+            # Simulate text after Step 1 is complete
+            text_after_step1 = "## Step 1: Calculate\n2+2=4\n\nNow we continue."
+            result = pf._inject_step_header(text_after_step1)
+            
+            assert "## Step 2:" in result
+            assert result.count("## Step 1:") == 1  # Original still there
+            
+            # Simulate text after Steps 1 and 2
+            text_after_step2 = result + "\nThis is step 2 content."
+            result2 = pf._inject_step_header(text_after_step2)
+            
+            assert "## Step 3:" in result2
+    
+    def test_no_double_injection_when_step_present(self):
+        """Should not inject if last line already has a step header."""
+        from trex.smc.llm_particle_filter import LLMParticleFilter
+        
+        with patch('trex.smc.llm_particle_filter.LLMParticleFilter.__init__',
+                   lambda self, *args, **kwargs: None):
+            pf = LLMParticleFilter.__new__(LLMParticleFilter)
+            pf.STEP_HEADER_PATTERN = re.compile(r"## Step (\d+):")
+            pf.STEP_PATTERN = re.compile(r"## Step \d+:")
+            
+            # Text that ends with a step header (LLM stopped right after)
+            text = "Content\n\n## Step 2:"
+            result = pf._inject_step_header(text)
+            
+            # Should not add another step header
+            assert result == text
+            assert result.count("## Step") == 1
+    
+    def test_step_numbers_extracted_correctly(self):
+        """_get_next_step_number should correctly find max step and add 1."""
+        from trex.smc.llm_particle_filter import LLMParticleFilter
+        
+        with patch('trex.smc.llm_particle_filter.LLMParticleFilter.__init__',
+                   lambda self, *args, **kwargs: None):
+            pf = LLMParticleFilter.__new__(LLMParticleFilter)
+            pf.STEP_HEADER_PATTERN = re.compile(r"## Step (\d+):")
+            
+            # Non-sequential steps (e.g., after some editing)
+            text = "## Step 1: A\n## Step 3: B\n## Step 5: C"
+            next_step = pf._get_next_step_number(text)
+            
+            # Should be max + 1, not count + 1
+            assert next_step == 6
+    
+    def test_injection_handles_edge_cases(self):
+        """Edge cases: empty text, only whitespace, text ending with colon."""
+        from trex.smc.llm_particle_filter import LLMParticleFilter
+        
+        with patch('trex.smc.llm_particle_filter.LLMParticleFilter.__init__',
+                   lambda self, *args, **kwargs: None):
+            pf = LLMParticleFilter.__new__(LLMParticleFilter)
+            pf.STEP_HEADER_PATTERN = re.compile(r"## Step (\d+):")
+            pf.STEP_PATTERN = re.compile(r"## Step \d+:")
+            
+            # Empty text
+            result = pf._inject_step_header("")
+            assert "## Step 1:" in result
+            
+            # Text ending with regular colon (not step header)
+            # This is the case that the old check would have failed on
+            text_with_colon = "Note: Be careful"
+            result = pf._inject_step_header(text_with_colon)
+            assert "## Step 1:" in result

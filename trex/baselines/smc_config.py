@@ -44,7 +44,9 @@ class SMCSteeringConfig:
     # Generation parameters
     temperature: float = 0.7
     max_tokens_per_step: int = 512  # Max tokens per generation call
-    max_total_tokens: int = 2048  # Max total tokens per particle
+    # Max total characters per particle (not tokens - character counting is faster)
+    # Rough heuristic: 1 token ≈ 4 chars, so 2048 chars ≈ 512 tokens
+    max_total_chars: int = 8192  # ~2048 tokens worth of characters
     
     # Final selection
     use_orm_for_final: bool = True  # Use ORM (not PRM) for final answer selection
