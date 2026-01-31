@@ -51,6 +51,11 @@ pip install --no-index vllm
 pip install ~/flash_attn-2.8.3+cu126torch2.9-cp312-cp312-linux_x86_64.whl --no-deps
 ```
 
+In order to run anything in an interactive session (note that interactive sessions do not have GPU access):
+```bash
+module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust
+source venv/bin/activate
+```
 - Model weights should be saved in `/scratch/l/liaidan/model_weights`.
 - The scratch directory for this project is in `/scratch/l/liaidan/t-rex/`. Any experimental results should be in `/scratch/l/liaidan/t-rex/results`. Any sbatch out and err logs should be in `/scratch/l/liaidan/t-rex/slurm`.
 

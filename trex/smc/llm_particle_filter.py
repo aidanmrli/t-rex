@@ -11,12 +11,15 @@ The LLMParticleFilter implements the core SMC loop for inference-time
 compute scaling in language models.
 """
 
+import logging
 import re
 from typing import List, Optional, TYPE_CHECKING
 
 import torch
 
 from trex.smc.particle_filter import ParticleFilter, Particle, SMCConfig
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from vllm import LLM, SamplingParams
@@ -76,6 +79,7 @@ class LLMParticleFilter(ParticleFilter):
         # Create SMCConfig from SMCSteeringConfig
         smc_config = SMCConfig(
             n_particles=config.n_particles,
+            resampling_strategy=config.resampling_strategy,
             ess_threshold=config.ess_threshold,
             resampling_method=config.resampling_method,
             seed=config.seed,
@@ -115,28 +119,34 @@ class LLMParticleFilter(ParticleFilter):
     def _inject_step_header(self, text: str) -> str:
         """
         Inject the next step header if text ends mid-step.
-        
+
         This ensures proper step numbering across expansion calls.
         The LLM needs to see the complete "## Step N:" pattern in
         context to continue correctly.
-        
+
         Args:
             text: Current particle text
-            
+
         Returns:
             Text with step header injected if needed
         """
-        next_step = self._get_next_step_number(text)
         stripped = text.rstrip()
-        
-        # Check if the last line contains a step header pattern
-        # This is more robust than checking just the last N characters
         last_line = stripped.split('\n')[-1] if '\n' in stripped else stripped
-        
-        # Only inject if the last line doesn't already have a step header
-        if not self.STEP_PATTERN.search(last_line):
-            return text + f"\n\n## Step {next_step}:"
-        return text
+
+        # Check if the last line already has a complete step header (## Step N:)
+        if self.STEP_PATTERN.search(last_line):
+            return text
+
+        # Check if text ends with partial step header from stop string ("## Step")
+        # This happens because we use stop=["## Step"] with include_stop_str_in_output=True
+        if stripped.endswith("## Step"):
+            # Complete the partial header with the correct number
+            next_step = self._get_next_step_number(text)
+            return text + f" {next_step}:"
+
+        # No step header at all - inject a new one
+        next_step = self._get_next_step_number(text)
+        return text + f"\n\n## Step {next_step}:"
     
     def _count_reasoning_steps(self, text: str) -> int:
         """
@@ -172,7 +182,7 @@ class LLMParticleFilter(ParticleFilter):
         
         # Hit max reasoning steps
         step_count = self._count_reasoning_steps(text)
-        if step_count >= self.config.max_steps:
+        if step_count >= self.config.max_reasoning_steps:
             return True
         
         return False
@@ -206,15 +216,9 @@ class LLMParticleFilter(ParticleFilter):
                 prompts.append(text)
             else:
                 active_indices.append(i)
-                if self._smc_iteration > 0:
-                    # After first expansion, we may need to inject step header
-                    # Only inject if text doesn't end with step pattern
-                    if not self.STEP_PATTERN.search(text.rstrip()[-20:] if len(text) >= 20 else text):
-                        prompts.append(self._inject_step_header(text))
-                    else:
-                        prompts.append(text)
-                else:
-                    prompts.append(text)
+                # Always call _inject_step_header - it's idempotent when a step
+                # header already exists on the last line
+                prompts.append(self._inject_step_header(text))
         
         if not active_indices:
             # All particles finished
@@ -258,27 +262,66 @@ class LLMParticleFilter(ParticleFilter):
                 still_generating = True
         
         self._smc_iteration += 1
-        return still_generating and self._smc_iteration < self.config.max_steps
+        return still_generating and self._smc_iteration < self.config.max_smc_iterations
     
     def score_particles(self) -> torch.Tensor:
         """
         Score all particles using PRM on latest step.
-        
+
         Formats each particle's text with separator tokens and
         extracts the score for the most recent step.
-        
+
+        Optimization: Only scores non-finished particles. Finished particles
+        retain their last score (stored in metadata) or get a default score.
+
         Returns:
-            Tensor of scores, shape (n_particles,), values in [0, 1]
+            Tensor of scores, shape (n_particles,), values in [0, 1],
+            on the same device as the particle filter weights.
         """
-        texts = self.get_particle_texts()
-        
-        # Format texts for PRM scoring
-        formatted_texts = []
-        for text in texts:
-            formatted = self.reward_model.format_text_for_scoring(text)
-            formatted_texts.append(formatted)
-        
-        return self.reward_model.get_latest_step_scores(formatted_texts)
+        n = len(self.particles)
+        device = self._device
+
+        # Identify active (non-finished) particles
+        active_indices = []
+        active_texts = []
+        for i, particle in enumerate(self.particles):
+            if not particle.metadata.get("finished"):
+                active_indices.append(i)
+                formatted = self.reward_model.format_text_for_scoring(particle.text)
+                active_texts.append(formatted)
+
+        # If no active particles, return cached scores or ones
+        if not active_texts:
+            scores = torch.ones(n, device=device)
+            for i, particle in enumerate(self.particles):
+                scores[i] = particle.metadata.get("last_prm_score", 1.0)
+            return scores
+
+        # Score only active particles
+        active_scores = self.reward_model.get_latest_step_scores(
+            active_texts, device=str(device)
+        )
+
+        # Build full score tensor, using cached scores for finished particles
+        scores = torch.ones(n, device=device)
+        for i, particle in enumerate(self.particles):
+            if particle.metadata.get("finished"):
+                # Use last known score or 1.0 (neutral for multiplication)
+                scores[i] = particle.metadata.get("last_prm_score", 1.0)
+
+        # Fill in active particle scores
+        for idx, active_idx in enumerate(active_indices):
+            score = active_scores[idx].item()
+            scores[active_idx] = score
+            # Cache the score for future reference
+            self.particles[active_idx].metadata["last_prm_score"] = score
+
+        logger.debug(
+            f"Scored {len(active_texts)}/{n} active particles, "
+            f"{n - len(active_texts)} finished (using cached scores)"
+        )
+
+        return scores
     
     def select_best_by_orm(self) -> Particle:
         """
@@ -304,34 +347,58 @@ class LLMParticleFilter(ParticleFilter):
     def step(self) -> bool:
         """
         Single SMC step: expand, score with PRM, resample.
-        
+
         Weight Update Strategy (Standard SMC Steering):
-        Uses MULTIPLICATIVE incremental weights: w_t = w_{t-1} × PRM(step_t)
-        
-        This differs from Twisted SMC which uses value ratios:
-            w_t(s_{1:t}) = [p_0(s_t|s_{1:t-1}) / q(s_t|s_{1:t-1})] × [ψ_t(s_{1:t}) / ψ_{t-1}(s_{1:t-1})]
-        Where ψ is the twist function (value estimate). When q = p_0, the
-        likelihood ratio cancels, leaving only the twist ratio.
-        
+        Uses multiplicative weights: w_t = w_{t-1} × PRM(step_t)
+
+        Important: Resampling resets weights to uniform (1/N). This is correct
+        SMC behavior - the weight information is "consumed" by resampling and
+        converted into particle multiplicity (high-weight particles are duplicated).
+
+        With resampling_strategy="every_step" (default):
+            - w_{t-1} is always uniform (1/N) from the previous resample
+            - Effectively: w_t ∝ PRM(step_t) each step
+            - Multiplicative accumulation happens implicitly through particle
+              lineages (good particles survive and multiply across steps)
+
+        With resampling_strategy="ess_adaptive":
+            - Weights accumulate multiplicatively between resampling events
+            - Only resets to uniform when ESS drops below threshold
+
+        This differs from Twisted SMC which uses value function ratios:
+            w_t ∝ ψ_t(s_{1:t}) / ψ_{t-1}(s_{1:t-1})
+        Where ψ is the twist/value function estimate.
+
         Returns:
             True if there are particles still generating, False if all finished
         """
         import warnings
-        
+
         # Expand particles (generate next step)
         should_continue = self.expand_particles()
-        
-        # Get PRM scores for the latest step
+
+        # Get PRM scores for the latest step (on same device as weights)
         step_scores = self.score_particles()
-        
-        # Check for degenerate case: all PRM scores are zero
+
+        # Log step scores for debugging
+        logger.debug(
+            f"SMC iteration {self._smc_iteration}: "
+            f"step_scores min={step_scores.min():.4f}, "
+            f"max={step_scores.max():.4f}, "
+            f"mean={step_scores.mean():.4f}"
+        )
+
+        # Check for degenerate case: all PRM scores are effectively zero
+        # Use a small tolerance for floating-point comparison
         # This means the PRM thinks ALL particles are completely wrong.
         # Continuing with uniform weights would be random - better to warn and stop.
-        if torch.all(step_scores == 0):
+        SCORE_EPSILON = 1e-8
+        if torch.all(step_scores < SCORE_EPSILON):
             warnings.warn(
-                f"All PRM scores are zero at SMC iteration {self._smc_iteration}. "
-                "This indicates all particles are considered completely wrong by the PRM. "
-                "Possible causes: degenerate particles, PRM misbehavior, or formatting issues. "
+                f"All PRM scores are near-zero (< {SCORE_EPSILON}) at SMC iteration "
+                f"{self._smc_iteration}. This indicates all particles are considered "
+                "completely wrong by the PRM. Possible causes: degenerate particles, "
+                "PRM misbehavior, or formatting issues. "
                 "Terminating SMC early - check particle content for debugging.",
                 UserWarning,
                 stacklevel=2
@@ -341,18 +408,36 @@ class LLMParticleFilter(ParticleFilter):
                 p.metadata["finished"] = True
                 p.metadata["degenerate_termination"] = True
             return False
-        
+
         # MULTIPLICATIVE weight update: w_t = w_{t-1} × PRM(step_t)
         current_weights = self.get_weights()
         new_weights = current_weights * step_scores
-        
+
         self.set_weights(new_weights)
         self.normalize_weights()
-        
-        # Resample if needed, (end of reasoning step or ESS is low)
-        if self.should_resample():
+
+        # Compute ESS for logging/decision
+        ess = self.effective_sample_size()
+        logger.debug(
+            f"SMC iteration {self._smc_iteration}: ESS={ess:.2f} "
+            f"(threshold={self.config.ess_threshold * self.n_particles:.2f})"
+        )
+
+        # Resample based on strategy
+        resampled = False
+        if self.config.resampling_strategy == "every_step":
+            # Standard SMC steering: resample after every reasoning step
             self.resample()
-        
+            resampled = True
+        elif self.config.resampling_strategy == "ess_adaptive":
+            # Adaptive: only resample when ESS drops below threshold
+            if self.should_resample():
+                self.resample()
+                resampled = True
+
+        if resampled:
+            logger.debug(f"SMC iteration {self._smc_iteration}: Resampled particles")
+
         return should_continue
     
     def run(self) -> Particle:

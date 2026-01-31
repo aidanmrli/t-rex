@@ -135,16 +135,53 @@ class TestRewardModelFormatting:
 
 class TestStepSplitting:
     """Test step detection and splitting."""
-    
+
+    def test_split_into_steps_with_preamble_extracts_both(self):
+        """Should extract preamble and steps separately."""
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+
+        text = "What is 2+2?\n\n## Step 1: Calculate\n2+2=4"
+        preamble, steps = rm._split_into_steps_with_preamble(text)
+
+        assert preamble == "What is 2+2?"
+        assert len(steps) == 1
+        assert "## Step 1" in steps[0]
+
+    def test_split_into_steps_with_preamble_no_steps(self):
+        """Text without steps should return all as preamble."""
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+
+        text = "Just a question with no steps"
+        preamble, steps = rm._split_into_steps_with_preamble(text)
+
+        assert preamble == "Just a question with no steps"
+        assert steps == []
+
+    def test_split_into_steps_with_preamble_empty_preamble(self):
+        """Text starting with step should have empty preamble."""
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+
+        text = "## Step 1: First\nContent"
+        preamble, steps = rm._split_into_steps_with_preamble(text)
+
+        assert preamble == ""
+        assert len(steps) == 1
+
     def test_split_into_steps_basic(self):
         """Should split text at ## Step N: boundaries."""
         from trex.models.reward_model import RewardModel
-        
+
         rm = RewardModel("dummy_path", load_model=False)
-        
+
         text = "## Step 1: First\nContent 1\n## Step 2: Second\nContent 2"
         steps = rm._split_into_steps(text)
-        
+
         assert len(steps) == 2
         assert "## Step 1" in steps[0]
         assert "Content 1" in steps[0]
@@ -261,18 +298,75 @@ class TestRewardModelScoring:
     def test_format_text_for_scoring(self):
         """format_text_for_scoring should detect and format steps."""
         from trex.models.reward_model import RewardModel
-        
+
         rm = RewardModel("dummy_path", load_model=False)
         rm.prm_config = QWEN_PRM_CONFIG
-        
+
         text = "## Step 1: Calculate\n2+2=4\n## Step 2: Verify\nCorrect"
         formatted = rm.format_text_for_scoring(text)
-        
+
         # Should have separator tokens
         assert "<extra_0>" in formatted
         # Should have both steps
         assert "## Step 1" in formatted
         assert "## Step 2" in formatted
+
+    def test_format_text_for_scoring_warns_on_empty(self):
+        """format_text_for_scoring should warn on empty or whitespace input."""
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+        rm.prm_config = QWEN_PRM_CONFIG
+
+        # Empty string
+        with pytest.warns(UserWarning, match="empty or whitespace-only text"):
+            formatted = rm.format_text_for_scoring("")
+        assert formatted == "<extra_0>"
+
+        # Whitespace only
+        with pytest.warns(UserWarning, match="empty or whitespace-only text"):
+            formatted = rm.format_text_for_scoring("   \n\t  ")
+        assert formatted.endswith("<extra_0>")
+
+    def test_format_text_for_scoring_includes_preamble(self):
+        """
+        CRITICAL: format_text_for_scoring should include the prompt/preamble
+        so the PRM has problem context when scoring.
+        """
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+        rm.prm_config = QWEN_PRM_CONFIG
+
+        text = "What is 2+2?\n\n## Step 1: Calculate\n2+2=4\n## Step 2: Verify\nCorrect"
+        formatted = rm.format_text_for_scoring(text)
+
+        # Should include the preamble (prompt)
+        assert "What is 2+2?" in formatted
+        # Should have both steps
+        assert "## Step 1" in formatted
+        assert "## Step 2" in formatted
+        # Should have separator tokens
+        assert "<extra_0>" in formatted
+
+    def test_format_text_for_scoring_preamble_before_first_step(self):
+        """Preamble should be prepended to first step, not get its own separator."""
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+        rm.prm_config = QWEN_PRM_CONFIG
+
+        text = "Problem: Find x.\n\n## Step 1: Solve\nx=5"
+        formatted = rm.format_text_for_scoring(text)
+
+        # Preamble should come before Step 1
+        preamble_pos = formatted.find("Problem: Find x.")
+        step1_pos = formatted.find("## Step 1")
+        assert preamble_pos < step1_pos
+
+        # Only one separator (after the step), not after preamble
+        assert formatted.count("<extra_0>") == 1
+        assert formatted.endswith("<extra_0>")
 
 
 class TestScoreExtractionLogic:

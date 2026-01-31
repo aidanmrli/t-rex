@@ -25,20 +25,26 @@ from trex.smc.resampling import (
 @dataclass
 class SMCConfig:
     """Configuration for Sequential Monte Carlo parameters."""
-    
+
     # Number of particles
     n_particles: int = 16
-    
+
+    # Resampling strategy:
+    # - "every_step": Resample after every SMC step (default, standard for SMC steering)
+    # - "ess_adaptive": Only resample when ESS drops below threshold
+    resampling_strategy: Literal["every_step", "ess_adaptive"] = "every_step"
+
     # ESS threshold for adaptive resampling (fraction of n_particles)
+    # Only used when resampling_strategy = "ess_adaptive"
     # If ESS < ess_threshold * n_particles, trigger resampling
     ess_threshold: float = 0.5
-    
+
     # Resampling algorithm to use
     resampling_method: Literal["multinomial", "systematic", "stratified"] = "systematic"
-    
+
     # Device for tensor operations
     device: str = "cpu"
-    
+
     # Random seed for reproducibility (optional)
     seed: Optional[int] = None
 

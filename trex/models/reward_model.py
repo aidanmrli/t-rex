@@ -174,30 +174,48 @@ class RewardModel:
             text = text[:-len(separator)].rstrip()
         return text + separator
     
-    def _split_into_steps(self, text: str) -> List[str]:
+    def _split_into_steps_with_preamble(self, text: str) -> tuple[str, List[str]]:
         """
-        Split text into reasoning steps based on step pattern.
-        
+        Split text into preamble (prompt) and reasoning steps.
+
         Args:
             text: Text containing "## Step N:" patterns
-            
+
         Returns:
-            List of step strings
+            Tuple of (preamble, steps) where preamble is text before first step
         """
-        # Find all step boundaries
         matches = list(self.STEP_PATTERN.finditer(text))
-        
+
         if not matches:
-            # No step pattern found, treat entire text as one "step"
-            return [text] if text.strip() else []
-        
+            # No step pattern found, treat entire text as preamble with no steps
+            return (text.strip(), [])
+
+        # Extract preamble (everything before first step)
+        preamble = text[:matches[0].start()].strip()
+
+        # Extract steps
         steps = []
         for i, match in enumerate(matches):
             start = match.start()
-            # End is either next match start or end of text
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             steps.append(text[start:end].strip())
-        
+
+        return (preamble, steps)
+
+    def _split_into_steps(self, text: str) -> List[str]:
+        """
+        Split text into reasoning steps based on step pattern.
+
+        Args:
+            text: Text containing "## Step N:" patterns
+
+        Returns:
+            List of step strings (without preamble)
+        """
+        _, steps = self._split_into_steps_with_preamble(text)
+        if not steps:
+            # No step pattern found, treat entire text as one "step"
+            return [text] if text.strip() else []
         return steps
     
     def _extract_scores_from_logits(
@@ -299,36 +317,71 @@ class RewardModel:
         # ORM uses only the final (and only) score
         return [scores[-1] if scores else 0.0 for scores in all_scores]
     
-    def get_latest_step_scores(self, texts: List[str]) -> torch.Tensor:
+    def get_latest_step_scores(
+        self, texts: List[str], device: Optional[str] = None
+    ) -> torch.Tensor:
         """
         Get PRM score for just the latest step in each text.
-        
+
         Used for SMC weight updates where we only care about the
         most recently generated step.
-        
+
         Args:
             texts: List of texts (with separator tokens for each step)
-            
+            device: Device to place output tensor on. If None, uses model device
+                    or CPU if model not loaded.
+
         Returns:
             Tensor of scores, shape (n_texts,), values in [0, 1]
         """
         all_scores = self.score_prm(texts)
         latest_scores = [scores[-1] if scores else 0.0 for scores in all_scores]
-        return torch.tensor(latest_scores)
+
+        # Determine output device
+        if device is None:
+            if self.model is not None and hasattr(self.model, 'device'):
+                device = self.model.device
+            else:
+                device = "cpu"
+
+        return torch.tensor(latest_scores, device=device)
     
     def format_text_for_scoring(self, text: str) -> str:
         """
         Prepare a raw text (with step patterns) for PRM scoring.
-        
-        Splits text into steps and formats with separator tokens.
-        
+
+        Splits text into preamble (prompt) and steps, then formats with separator
+        tokens. The preamble is prepended to the first step so the PRM has
+        problem context when scoring.
+
+        Format: preamble + step1<sep> + step2<sep> + ...
+
         Args:
             text: Raw text with "## Step N:" patterns
-            
+
         Returns:
             Formatted text ready for score_prm()
         """
-        steps = self._split_into_steps(text)
+        import warnings
+
+        if not text or not text.strip():
+            warnings.warn(
+                "format_text_for_scoring called with empty or whitespace-only text. "
+                "This returns just a separator token, which may produce "
+                "unexpected PRM scores. Consider checking for empty input upstream.",
+                UserWarning,
+                stacklevel=2
+            )
+            return self.prm_config.step_separator_token
+
+        preamble, steps = self._split_into_steps_with_preamble(text)
+
         if not steps:
+            # No steps found, return text with separator
             return text + self.prm_config.step_separator_token
+
+        # Prepend preamble to first step if present
+        if preamble:
+            steps[0] = preamble + "\n\n" + steps[0]
+
         return self.format_for_prm(steps)

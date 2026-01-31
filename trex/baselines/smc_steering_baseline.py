@@ -17,6 +17,7 @@ Key Features:
 import argparse
 import atexit
 import json
+import logging
 import os
 import signal
 import sys
@@ -30,6 +31,8 @@ import torch
 
 from trex.baselines.smc_config import SMCSteeringConfig, CheckpointManager
 from trex.eval import MathVerifier
+
+logger = logging.getLogger(__name__)
 
 
 class SMCSteeringBaseline:
@@ -180,44 +183,54 @@ class SMCSteeringBaseline:
     def evaluate_single(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Run SMC on a single problem.
-        
+
         Args:
             item: Dataset item with prompt and answer keys
-            
+
         Returns:
             Result dictionary with final answer, scores, and metrics
         """
         from trex.smc.llm_particle_filter import LLMParticleFilter
-        
+
         self._init_models()
-        
+
         problem = item[self.config.prompt_key]
         ground_truth = item[self.config.answer_key]
         prompt = self.prepare_prompt(problem)
-        
+
+        logger.debug(f"Evaluating problem: {problem[:100]}...")
+
         # Create particle filter
         pf = LLMParticleFilter(
             config=self.config,
             generator=self.generator,
             reward_model=self.reward_model,
         )
-        
+
         # Initialize particles with the prompt
         pf.initialize(prompt)
-        
+        logger.debug(f"Initialized {self.config.n_particles} particles")
+
         # Run SMC loop
         start_time = time.time()
         best_particle = pf.run()
         elapsed_time = time.time() - start_time
-        
+
         # Extract final answer from best particle
         final_text = best_particle.text
         extracted_answer = self.verifier.extract_answer(final_text)
         is_correct = self.verifier.verify(extracted_answer, ground_truth)
-        
+
         # Get summary statistics
         summary = pf.get_summary()
-        
+
+        logger.debug(
+            f"SMC completed: iterations={summary['smc_iteration']}, "
+            f"reasoning_steps={best_particle.metadata.get('reasoning_step_count', 0)}, "
+            f"orm_score={best_particle.metadata.get('orm_score', 0.0):.4f}, "
+            f"correct={is_correct}, elapsed={elapsed_time:.2f}s"
+        )
+
         result = {
             "problem": problem,
             "ground_truth": ground_truth,
@@ -229,7 +242,7 @@ class SMCSteeringBaseline:
             "n_reasoning_steps": best_particle.metadata.get("reasoning_step_count", 0),
             "elapsed_time": elapsed_time,
         }
-        
+
         return result
     
     def _should_checkpoint(self, idx: int) -> bool:
@@ -435,8 +448,12 @@ def main():
         help="Number of particles"
     )
     parser.add_argument(
-        "--max_steps", type=int, default=20,
-        help="Maximum SMC iterations"
+        "--max_smc_iterations", type=int, default=20,
+        help="Maximum SMC loop iterations (expand → score → resample)"
+    )
+    parser.add_argument(
+        "--max_reasoning_steps", type=int, default=15,
+        help="Maximum reasoning steps per particle (## Step N:)"
     )
     parser.add_argument(
         "--ess_threshold", type=float, default=0.5,
@@ -446,6 +463,12 @@ def main():
         "--resampling_method", type=str, default="systematic",
         choices=["multinomial", "systematic", "stratified"],
         help="Resampling method"
+    )
+    parser.add_argument(
+        "--resampling_strategy", type=str, default="every_step",
+        choices=["every_step", "ess_adaptive"],
+        help="Resampling strategy: 'every_step' resamples after each SMC step, "
+             "'ess_adaptive' only resamples when ESS drops below threshold"
     )
     parser.add_argument(
         "--temperature", type=float, default=0.7,
@@ -498,17 +521,43 @@ def main():
         "--checkpoint_time_interval", type=int, default=600,
         help="Save checkpoint every N seconds"
     )
-    
+
+    # Logging arguments
+    parser.add_argument(
+        "--log_level", type=str, default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level. Use DEBUG for detailed SMC diagnostics."
+    )
+    parser.add_argument(
+        "--log_file", type=str, default=None,
+        help="Optional file path to write logs to (in addition to stderr)"
+    )
+
     args = parser.parse_args()
+
+    # Configure logging
+    log_level = getattr(logging, args.log_level.upper())
+    handlers = [logging.StreamHandler()]
+    if args.log_file:
+        os.makedirs(os.path.dirname(args.log_file) or ".", exist_ok=True)
+        handlers.append(logging.FileHandler(args.log_file))
+
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=handlers,
+    )
     
     config = SMCSteeringConfig(
         generator_model_path=args.generator_model_path,
         reward_model_path=args.reward_model_path,
         dataset_path=args.dataset_path,
         n_particles=args.n_particles,
-        max_steps=args.max_steps,
+        max_smc_iterations=args.max_smc_iterations,
+        max_reasoning_steps=args.max_reasoning_steps,
         ess_threshold=args.ess_threshold,
         resampling_method=args.resampling_method,
+        resampling_strategy=args.resampling_strategy,
         temperature=args.temperature,
         seed=args.seed,
         generator_tp_size=args.generator_tp_size,

@@ -33,13 +33,21 @@ class SMCSteeringConfig:
     
     # SMC parameters
     n_particles: int = 16
-    max_steps: int = 20  # Maximum SMC iterations (not reasoning steps)
+    max_smc_iterations: int = 20  # Maximum SMC loop iterations (expand → score → resample)
+    max_reasoning_steps: int = 15  # Maximum "## Step N:" reasoning steps per particle
     step_pattern: str = r"## Step \d+:"  # Regex for step detection
     seed: Optional[int] = None  # Random seed for reproducibility
     
     # Resampling
     resampling_method: str = "systematic"  # "multinomial", "systematic", "stratified"
-    ess_threshold: float = 0.5  # Resample when ESS < threshold * n_particles
+    # Resampling strategy:
+    # - "every_step": Resample after every SMC step (default, standard for SMC steering).
+    #   Weights are reset to uniform after each resample. PRM scores determine which
+    #   particles survive each step; accumulation happens through particle lineages.
+    # - "ess_adaptive": Only resample when ESS drops below threshold. Weights
+    #   accumulate multiplicatively (w_t = w_{t-1} × PRM_t) between resampling events.
+    resampling_strategy: str = "every_step"
+    ess_threshold: float = 0.5  # Resample when ESS < threshold * n_particles (ess_adaptive only)
     
     # Generation parameters
     temperature: float = 0.7
@@ -89,7 +97,7 @@ Where [answer] is just the final number or expression that solves the problem.""
         """Set derived values and validate configuration."""
         if self.wandb_run_name is None:
             self.wandb_run_name = f"smc_steering_n{self.n_particles}"
-        
+
         # Validate resampling method
         valid_methods = ("multinomial", "systematic", "stratified")
         if self.resampling_method not in valid_methods:
@@ -97,7 +105,15 @@ Where [answer] is just the final number or expression that solves the problem.""
                 f"Invalid resampling_method: {self.resampling_method}. "
                 f"Must be one of {valid_methods}"
             )
-        
+
+        # Validate resampling strategy
+        valid_strategies = ("every_step", "ess_adaptive")
+        if self.resampling_strategy not in valid_strategies:
+            raise ValueError(
+                f"Invalid resampling_strategy: {self.resampling_strategy}. "
+                f"Must be one of {valid_strategies}"
+            )
+
         # Validate ESS threshold
         if not 0.0 < self.ess_threshold <= 1.0:
             raise ValueError(
@@ -120,8 +136,10 @@ Where [answer] is just the final number or expression that solves the problem.""
             "generator_model_path": self.generator_model_path,
             "reward_model_path": self.reward_model_path,
             "n_particles": self.n_particles,
-            "max_steps": self.max_steps,
+            "max_smc_iterations": self.max_smc_iterations,
+            "max_reasoning_steps": self.max_reasoning_steps,
             "resampling_method": self.resampling_method,
+            "resampling_strategy": self.resampling_strategy,
             "ess_threshold": self.ess_threshold,
             "seed": self.seed,
         }

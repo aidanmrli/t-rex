@@ -264,25 +264,38 @@ def mock_output():
 def mock_llm(mock_output):
     """
     Mock vLLM LLM class for unit tests.
-    
+
     Returns a MagicMock that simulates vLLM's LLM.generate() method.
     Override generate.return_value to customize outputs.
+
+    IMPORTANT: The mock returns CONTINUATIONS, not full responses.
+    In real usage:
+    1. LLMParticleFilter calls _inject_step_header() which adds "## Step N:" to the prompt
+    2. The LLM generates a continuation AFTER that header
+    3. The continuation is concatenated to the prompt
+
+    So if the prompt becomes "Question?\n\n## Step 1:", the LLM generates
+    " Calculate\n2+2=4\n\n## Step" (note: starts with content, ends with stop string).
+
+    The mock's default output simulates this: content for step 1, then the stop string.
     """
     from unittest.mock import MagicMock
-    
+
     llm = MagicMock()
-    # Default: return a single step
+    # Default: return continuation after "## Step 1:" header
+    # The header is injected by _inject_step_header(), so continuation starts with content
+    # Ends with "## Step" (the stop string with include_stop_str_in_output=True)
     llm.generate = MagicMock(return_value=[
-        mock_output.from_text("## Step 1: Calculate\n2+2=4\n## Step")
+        mock_output.from_text(" Calculate\n2+2=4\n\n## Step")
     ])
-    
+
     # Mock tokenizer for chat template
     mock_tokenizer = MagicMock()
     mock_tokenizer.apply_chat_template = MagicMock(
         side_effect=lambda messages, **kwargs: f"[INST] {messages[-1]['content']} [/INST]"
     )
     llm.get_tokenizer = MagicMock(return_value=mock_tokenizer)
-    
+
     return llm
 
 
@@ -332,10 +345,11 @@ def mock_reward_model():
 def mock_smc_config():
     """Mock SMCSteeringConfig for unit tests."""
     from trex.baselines.smc_config import SMCSteeringConfig
-    
+
     return SMCSteeringConfig(
         n_particles=4,
-        max_steps=5,
+        max_smc_iterations=5,
+        max_reasoning_steps=10,
         temperature=0.7,
         seed=42,
         enable_checkpointing=False,
