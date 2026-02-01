@@ -292,9 +292,9 @@ class RewardModel:
             truncation=True,
         ).to(self.model.device)
         
-        # Forward pass
+        # Forward pass (use_cache=False to avoid DynamicCache compatibility issues)
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            outputs = self.model(**inputs, use_cache=False)
             logits = outputs[0]  # (batch, seq_len, num_classes)
         
         # Create mask for separator token positions

@@ -126,9 +126,7 @@ class SMCSteeringBaseline:
                 trust_remote_code=True,
                 seed=self.config.seed,
             )
-            # Let's try this fix. Problem: 'DynamicCache' object has no attribute 'get_usable_length'
-            self.generator.config.use_cache = False
-    
+
     def _init_reward_model(self) -> None:
         """Lazy initialization of reward model."""
         if self.reward_model is None:

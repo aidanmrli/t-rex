@@ -107,15 +107,21 @@ echo "  Output Dir: ${OUTPUT_DIR}"
 echo "  Seed: ${SEED}"
 echo "=============================================="
 
-# Check for existing checkpoint
-if [[ -f "${OUTPUT_DIR}/checkpoint.json" ]]; then
-    echo ""
-    echo "Found existing checkpoint - will resume from saved state"
-    echo ""
-fi
+# Check for existing checkpoint (DISABLED - forcing fresh start)
+# if [[ -f "${OUTPUT_DIR}/checkpoint.json" ]]; then
+#     echo ""
+#     echo "Found existing checkpoint - will resume from saved state"
+#     echo ""
+# fi
 
 # Create output directory
 mkdir -p "${OUTPUT_DIR}/generations"
+
+# Remove existing checkpoint to force fresh start
+if [[ -f "${OUTPUT_DIR}/checkpoint.json" ]]; then
+    echo "Removing existing checkpoint to start fresh..."
+    rm -f "${OUTPUT_DIR}/checkpoint.json"
+fi
 
 # Run the baseline
 python -m trex.baselines.smc_steering_baseline \
@@ -132,9 +138,9 @@ python -m trex.baselines.smc_steering_baseline \
     --reward_model_tp_size ${REWARD_MODEL_TP_SIZE} \
     --gpu_memory_utilization ${GPU_MEMORY_UTILIZATION} \
     --output_dir "${OUTPUT_DIR}" \
-    --enable_checkpointing \
-    --checkpoint_interval ${CHECKPOINT_INTERVAL} \
-    --checkpoint_time_interval ${CHECKPOINT_TIME_INTERVAL} \
+    # --enable_checkpointing \  # DISABLED - forcing fresh start
+    # --checkpoint_interval ${CHECKPOINT_INTERVAL} \
+    # --checkpoint_time_interval ${CHECKPOINT_TIME_INTERVAL} \
     "$@"
 
 echo ""
