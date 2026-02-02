@@ -60,6 +60,10 @@ class SMCSteeringConfig:
     # Max number of generation chunks allowed to complete a single reasoning step.
     # Acts as a fallback if the model doesn't emit the next "## Step N:" header.
     max_step_chunk_calls: int = 4
+    # Prompt handling
+    use_token_prompts: bool = False  # Use vLLM TokensPrompt with token IDs
+    enable_prompt_truncation: bool = True  # Truncate prompts that exceed context
+    prompt_max_tokens: Optional[int] = None  # Optional hard cap on prompt tokens
     # Max total characters per particle (not tokens - character counting is faster)
     # Rough heuristic: 1 token ≈ 4 chars, so 2048 chars ≈ 512 tokens
     max_total_chars: int = 8192  # ~2048 tokens worth of characters
@@ -145,6 +149,11 @@ Where [answer] is just the final number or expression that solves the problem.""
             raise ValueError(
                 f"resample_every_tokens must be >= 1, got {self.resample_every_tokens}"
             )
+
+        if self.prompt_max_tokens is not None and self.prompt_max_tokens < 1:
+            raise ValueError(
+                f"prompt_max_tokens must be >= 1, got {self.prompt_max_tokens}"
+            )
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
@@ -165,6 +174,9 @@ Where [answer] is just the final number or expression that solves the problem.""
             "max_smc_iterations": self.max_smc_iterations,
             "max_reasoning_steps": self.max_reasoning_steps,
             "max_step_chunk_calls": self.max_step_chunk_calls,
+            "use_token_prompts": self.use_token_prompts,
+            "enable_prompt_truncation": self.enable_prompt_truncation,
+            "prompt_max_tokens": self.prompt_max_tokens,
             "resampling_unit": self.resampling_unit,
             "resample_every_tokens": self.resample_every_tokens,
             "resampling_method": self.resampling_method,

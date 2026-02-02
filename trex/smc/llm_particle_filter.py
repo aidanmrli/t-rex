@@ -14,7 +14,7 @@ compute scaling in language models.
 import logging
 import re
 from copy import deepcopy
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Tuple
 
 import torch
 
@@ -101,6 +101,7 @@ class LLMParticleFilter(ParticleFilter):
         # Note: Different from reasoning_step_count which tracks "## Step N:" in text
         self._smc_iteration = 0
         self._last_generation_progressed = False
+        self._tokenizer = None
 
     def initialize(self, prompt: str) -> None:
         """
@@ -113,6 +114,149 @@ class LLMParticleFilter(ParticleFilter):
         for p in self.particles:
             p.metadata["prm_preamble"] = prompt
             p.metadata["prm_steps"] = []
+            p.metadata["prompt_truncated"] = False
+            p.metadata["prompt_truncated_tokens"] = 0
+
+    def _get_tokenizer(self):
+        if self._tokenizer is None:
+            self._tokenizer = self.generator.get_tokenizer()
+        return self._tokenizer
+
+    def _tokenize_prompt(self, text: str) -> Optional[List[int]]:
+        tokenizer = self._get_tokenizer()
+        if hasattr(tokenizer, "encode"):
+            return tokenizer.encode(text, add_special_tokens=False)
+        if callable(tokenizer):
+            try:
+                encoded = tokenizer(text, add_special_tokens=False)
+                if isinstance(encoded, dict) and "input_ids" in encoded:
+                    return encoded["input_ids"]
+                if isinstance(encoded, list):
+                    return encoded
+            except Exception:
+                return None
+        return None
+
+    def _decode_prompt(self, token_ids: List[int]) -> Optional[str]:
+        tokenizer = self._get_tokenizer()
+        if hasattr(tokenizer, "decode"):
+            try:
+                return tokenizer.decode(
+                    token_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+            except Exception:
+                return None
+        return None
+
+    def _infer_model_max_len(self) -> Optional[int]:
+        try:
+            llm_engine = getattr(self.generator, "llm_engine", None)
+            if llm_engine is not None:
+                model_config = getattr(llm_engine, "model_config", None)
+                if model_config is not None:
+                    max_len = getattr(model_config, "max_model_len", None)
+                    if isinstance(max_len, int) and max_len > 0:
+                        return max_len
+        except Exception:
+            pass
+
+        try:
+            tokenizer = self._get_tokenizer()
+            max_len = getattr(tokenizer, "model_max_length", None)
+            if isinstance(max_len, int) and 0 < max_len < 1_000_000:
+                return max_len
+        except Exception:
+            pass
+
+        return None
+
+    def _compute_prompt_max_tokens(self, max_new_tokens: int) -> Optional[int]:
+        if not self.config.enable_prompt_truncation and self.config.prompt_max_tokens is None:
+            return None
+
+        prompt_max = self.config.prompt_max_tokens
+        model_max = self._infer_model_max_len()
+        if model_max is not None:
+            model_based = max(model_max - max_new_tokens, 1)
+            if prompt_max is None:
+                prompt_max = model_based
+            else:
+                prompt_max = min(prompt_max, model_based)
+
+        return prompt_max
+
+    def _prepare_prompt_inputs(
+        self, indices: List[int], max_new_tokens: int
+    ) -> Tuple[List[str], List[object]]:
+        """
+        Prepare prompts for vLLM, optionally using TokensPrompt and truncating.
+
+        Returns:
+            Tuple of (prompt_texts, prompt_inputs) where prompt_inputs are either
+            strings or TokensPrompt objects.
+        """
+        prompt_texts = []
+        prompt_inputs = []
+        max_prompt_tokens = self._compute_prompt_max_tokens(max_new_tokens)
+        use_token_prompts = self.config.use_token_prompts
+
+        tokenizer_needed = use_token_prompts or max_prompt_tokens is not None
+
+        for idx in indices:
+            text = self.particles[idx].text
+            token_ids = None
+            truncated = False
+
+            if tokenizer_needed:
+                token_ids = self._tokenize_prompt(text)
+                if token_ids is not None:
+                    prompt_len = len(token_ids)
+                    self.particles[idx].metadata["prompt_token_len"] = prompt_len
+                    self.particles[idx].metadata["prompt_max_tokens"] = max_prompt_tokens
+
+                    if max_prompt_tokens is not None and prompt_len > max_prompt_tokens:
+                        truncated_ids = token_ids[-max_prompt_tokens:]
+                        decoded = self._decode_prompt(truncated_ids)
+                        if decoded is not None:
+                            text = decoded
+                            token_ids = truncated_ids
+                            truncated = True
+                            self.particles[idx].metadata["prompt_truncated"] = True
+                            self.particles[idx].metadata["prompt_truncated_tokens"] = (
+                                prompt_len - len(truncated_ids)
+                            )
+                            self.particles[idx].metadata[
+                                "prompt_token_len_after_truncation"
+                            ] = len(truncated_ids)
+                            if self.config.resampling_unit == "token":
+                                self.particles[idx].metadata["prm_preamble"] = text
+                                self.particles[idx].metadata["prm_steps"] = []
+                        else:
+                            logger.warning(
+                                "Prompt truncation needed but tokenizer.decode is unavailable. "
+                                "Skipping truncation; prompt may exceed model context."
+                            )
+
+                else:
+                    logger.warning(
+                        "Prompt tokenization unavailable. Skipping truncation checks."
+                    )
+
+            if use_token_prompts and token_ids is not None:
+                from vllm.inputs import TokensPrompt
+
+                prompt_inputs.append(TokensPrompt(prompt_token_ids=token_ids))
+            else:
+                prompt_inputs.append(text)
+
+            if truncated:
+                self.particles[idx].metadata["prompt_truncation_side"] = "left"
+
+            prompt_texts.append(text)
+
+        return prompt_texts, prompt_inputs
     
     @property
     def smc_iteration(self) -> int:
@@ -299,8 +443,6 @@ class LLMParticleFilter(ParticleFilter):
         """
         from vllm import SamplingParams
 
-        texts = self.get_particle_texts()
-
         # Only generate for pending particles (active and not waiting for next header)
         pending_indices = self._get_pending_indices()
 
@@ -309,8 +451,13 @@ class LLMParticleFilter(ParticleFilter):
             self._last_generation_progressed = False
             return any(not p.metadata.get("finished") for p in self.particles)
 
+        # Generate until next step header or EOS. Exclude stop string from output.
+        pending_prompt_texts, pending_prompt_inputs = self._prepare_prompt_inputs(
+            pending_indices, max_new_tokens=self.config.max_tokens_per_step
+        )
+
         # Use dynamic stop sequence when all pending particles are on the same next step.
-        next_steps = {self._get_next_step_number(texts[i]) for i in pending_indices}
+        next_steps = {self._get_next_step_number(text) for text in pending_prompt_texts}
         if len(next_steps) == 1:
             next_step = next_steps.pop()
             stop_sequences = [f"## Step {next_step}:"]
@@ -325,9 +472,7 @@ class LLMParticleFilter(ParticleFilter):
             stop=stop_sequences,
             include_stop_str_in_output=False,
         )
-
-        pending_prompts = [texts[i] for i in pending_indices]
-        outputs = self.generator.generate(pending_prompts, sampling_params)
+        outputs = self.generator.generate(pending_prompt_inputs, sampling_params)
 
         any_progress = False
 
@@ -337,7 +482,7 @@ class LLMParticleFilter(ParticleFilter):
             if continuation:
                 any_progress = True
 
-            self.particles[particle_idx].text = pending_prompts[offset] + continuation
+            self.particles[particle_idx].text = pending_prompt_texts[offset] + continuation
 
             # Check finish_reason to understand why generation stopped
             if output.finish_reason == "stop":
@@ -356,6 +501,18 @@ class LLMParticleFilter(ParticleFilter):
                 self.particles[particle_idx].metadata["finish_reason"] = output.finish_reason
                 logger.debug(
                     f"Particle {particle_idx} finished naturally: finish_reason={output.finish_reason}"
+                )
+
+            response_token_ids = getattr(output, "token_ids", None)
+            if response_token_ids is not None:
+                response_length = len(response_token_ids)
+                self.particles[particle_idx].metadata["response_length"] = response_length
+                self.particles[particle_idx].metadata["response_clipped"] = (
+                    response_length >= self.config.max_tokens_per_step
+                )
+            else:
+                self.particles[particle_idx].metadata["response_clipped"] = (
+                    output.finish_reason == "length"
                 )
 
             # Track per-particle reasoning step count
@@ -382,7 +539,9 @@ class LLMParticleFilter(ParticleFilter):
             self._last_generation_progressed = False
             return False
 
-        prompts = [self.particles[i].text for i in active_indices]
+        prompt_texts, prompt_inputs = self._prepare_prompt_inputs(
+            active_indices, max_new_tokens=self.config.resample_every_tokens
+        )
 
         sampling_params = SamplingParams(
             n=1,
@@ -392,7 +551,7 @@ class LLMParticleFilter(ParticleFilter):
             include_stop_str_in_output=False,
         )
 
-        outputs = self.generator.generate(prompts, sampling_params)
+        outputs = self.generator.generate(prompt_inputs, sampling_params)
 
         any_progress = False
 
@@ -402,7 +561,7 @@ class LLMParticleFilter(ParticleFilter):
             if continuation:
                 any_progress = True
 
-            self.particles[particle_idx].text = prompts[offset] + continuation
+            self.particles[particle_idx].text = prompt_texts[offset] + continuation
 
             if continuation:
                 steps = self.particles[particle_idx].metadata.setdefault("prm_steps", [])
@@ -415,6 +574,18 @@ class LLMParticleFilter(ParticleFilter):
             else:
                 self.particles[particle_idx].metadata["finished"] = True
                 self.particles[particle_idx].metadata["finish_reason"] = output.finish_reason
+
+            response_token_ids = getattr(output, "token_ids", None)
+            if response_token_ids is not None:
+                response_length = len(response_token_ids)
+                self.particles[particle_idx].metadata["response_length"] = response_length
+                self.particles[particle_idx].metadata["response_clipped"] = (
+                    response_length >= self.config.resample_every_tokens
+                )
+            else:
+                self.particles[particle_idx].metadata["response_clipped"] = (
+                    output.finish_reason == "length"
+                )
 
             # Check if particle is finished (boxed answer, max chars, etc.)
             if self._is_finished(self.particles[particle_idx]):

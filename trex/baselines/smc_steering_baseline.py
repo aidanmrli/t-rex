@@ -499,6 +499,22 @@ def main():
         help="Max generation chunks to complete a single reasoning step"
     )
     parser.add_argument(
+        "--use_token_prompts", action="store_true",
+        help="Use vLLM TokensPrompt with token IDs"
+    )
+    parser.add_argument(
+        "--enable_prompt_truncation", action="store_true", default=True,
+        help="Enable prompt truncation to fit model context"
+    )
+    parser.add_argument(
+        "--disable_prompt_truncation", action="store_false", dest="enable_prompt_truncation",
+        help="Disable prompt truncation"
+    )
+    parser.add_argument(
+        "--prompt_max_tokens", type=int, default=None,
+        help="Optional hard cap on prompt token length"
+    )
+    parser.add_argument(
         "--seed", type=int, default=None,
         help="Random seed"
     )
@@ -586,6 +602,9 @@ def main():
         resampling_strategy=args.resampling_strategy,
         temperature=args.temperature,
         max_step_chunk_calls=args.max_step_chunk_calls,
+        use_token_prompts=args.use_token_prompts,
+        enable_prompt_truncation=args.enable_prompt_truncation,
+        prompt_max_tokens=args.prompt_max_tokens,
         seed=args.seed,
         generator_tp_size=args.generator_tp_size,
         reward_model_tp_size=args.reward_model_tp_size,
