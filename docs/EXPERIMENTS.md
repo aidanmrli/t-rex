@@ -1,8 +1,8 @@
 # Experiments for T-REX
 
-**Last Updated:** 2026-02-01
+**Last Updated:** 2026-02-02
 
-**NOTE:** We should always update this document once we have planned an experiment and it works. Then, when the experiment has completed, we should immediately update this document with the results.
+**NOTE:** We should always update this document once we have planned an experiment and it works. Then, when the experiment has completed, we should immediately update this document with the results. Status entries are date-stamped; refresh them after each re-run.
 
 ---
 
@@ -53,6 +53,10 @@ Where C(a,b) is the binomial coefficient. This is an unbiased estimator that avo
 - `pass@1`: Single-shot accuracy (what you'd get with greedy decoding at this temperature)
 - `pass@N`: Upper bound with N samples (the "oracle" that picks the correct answer if any exists)
 - The gap between pass@1 and pass@N quantifies the "search opportunity" that SMC/TSMC can exploit
+
+**Greedy sampling guard (vLLM):**
+vLLM requires `n=1` when `temperature=0`. The Best-of-N harness now enforces `effective_n = 1` for greedy runs,
+so sweeps that include `temperature=0` are safe.
 
 #### Verification Pipeline
 
@@ -267,6 +271,8 @@ Added for HPC clusters without internet on compute nodes:
 
 ### Validation Status
 
+**Status Note (last confirmed 2026-02-01):** Update this table after each new run.
+
 | Script | Submitted | Started | Initialization | Training | Status |
 |--------|-----------|---------|----------------|----------|--------|
 | `run_bon_baseline.sh` | Yes | Yes | Success | **COMPLETE** | pass@32=81.6% on MATH-500 |
@@ -327,7 +333,7 @@ Output: Best solution with highest ORM score
 
 ### Experiment 3: GRPO Evaluation on GSM8K
 
-**Status:** FAILED - BUG IN BEST_OF_N_BASELINE
+**Status:** READY TO RE-RUN (bug fix landed 2026-02-02)
 
 **Configuration:**
 - Model: Trained GRPO model from Experiment 1
@@ -343,11 +349,9 @@ ValueError: n must be 1 when using greedy sampling, got 16.
 **Root Cause:**
 vLLM does not allow `n > 1` when `temperature=0` (greedy sampling). The evaluation script tries to generate 16 samples at temperature=0, which is invalid.
 
-**Fix Required:**
-Modify `trex/baselines/best_of_n_baseline.py` to handle greedy decoding differently:
-1. When temperature=0, use n=1 (single greedy sample)
-2. Or skip temperature=0 in the sweep when n > 1
-3. Or loop n times with n=1 for greedy sampling
+**Fix Implemented (2026-02-02):**
+`trex/baselines/best_of_n_baseline.py` now forces `effective_n = 1` when `temperature=0`. Re-run the evaluation
+script to regenerate pass@k metrics with the fix in place.
 
 **Output Location:**
 ```
@@ -358,7 +362,7 @@ Modify `trex/baselines/best_of_n_baseline.py` to handle greedy decoding differen
 
 ### Experiment 4: SMC Steering Baseline on GSM8K
 
-**Status:** COMPLETED WITH CRITICAL BUG - NEEDS RE-RUN
+**Status:** READY TO RE-RUN (stop-string fix landed 2026-02-02)
 
 **Configuration:**
 - Generator: `Qwen/Qwen2.5-7B`
@@ -391,7 +395,7 @@ The experiment completed but produced **invalid results** due to the stop string
 - The model generates correct Step 1, Step 2 reasoning...
 - ...but never completes to produce an actual answer
 
-**Fix Implemented (uncommitted in working directory):**
+**Fix Implemented (2026-02-02, in repo):**
 Modified `trex/smc/llm_particle_filter.py` to:
 1. Use `include_stop_str_in_output=False`
 2. Check `finish_reason` to detect if model wants to continue or is done

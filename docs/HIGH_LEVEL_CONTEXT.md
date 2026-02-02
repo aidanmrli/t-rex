@@ -1,5 +1,7 @@
 # System Context & Mathematical Specification for T-REX: Twisted Replica Exchange for Bootstrapping Reasoning
 
+**Last Updated:** 2026-02-02
+
 ## 1. Abstract Framework
 
 T-REX is a probabilistic inference framework designed to solve the "Narrow Passage" problem in constrained language generation (e.g., math reasoning, code generation). It decouples the reasoning process into three distinct, interacting mechanisms:
@@ -137,6 +139,14 @@ $$\mathcal{L}_{Twist} = || V_\gamma(x_{1:t}) - \phi(x_{1:T}) ||^2$$
 
 ## 5. Implementation Architecture
 
+### 5.0 Repo Anchors (2026-02-02)
+
+- **SMC Core:** `trex/smc/particle_filter.py`, `trex/smc/resampling.py`
+- **Twisted SMC Core:** `trex/smc/twisted_smc.py` (weights + base class, tests in `trex/tests/test_smc/test_twisted_smc.py`)
+- **LLM Particle Filter:** `trex/smc/llm_particle_filter.py` (step-wise rollouts + PRM scoring)
+- **Tempering Primitives:** `trex/tempering/temperature_ladder.py` (betas + swap pairs), `trex/tempering/exchange.py` (replica exchange)
+- **Reward Model Wrapper:** `trex/models/reward_model.py` (PRM/ORM adapter)
+
 ### 5.1. Model Components
 
 - **Base Model:** Frozen LLM (e.g., Qwen-2.5-7B (base)).
@@ -202,7 +212,8 @@ Phase 2: The Loop (SMC)
 Repeat until all particles reach a terminal state (e.g., \boxed{answer} or max tokens).
 
 **1. Expansion (Rollout Step):** For each particle $x^{(i)}_{t-1}$, sample the next "step" using the base LLM $p_\theta$.
- * *Implementation Note:* Generate tokens until a delimiter (e.g., \n or specific step separator) is reached.
+ * *Implementation Note:* Use stop strings for step boundaries, but exclude the stop token from output; rely on
+   `finish_reason` to detect termination and inject the next step header **after** scoring (to avoid contaminating PRM).
  $$x^{(i)}_t \sim p_\theta(\cdot | x^{(i)}_{t-1})$$
 
 **2. Weighting (Scoring):** Score the newly expanded particle using the Reward Model.
@@ -225,6 +236,9 @@ Once all particles are finished, select the final answer.
 This method replaces standard LLM generation (or Beam Search) with a Twisted Sequential Monte Carlo (TSMC) sampler.
 
 The Core Idea: Instead of hoping the base model stumbles upon the right answer, we train a Value Function (Twist) that predicts whether a current partial reasoning trace will lead to a correct answer.
+
+**Implementation Status (2026-02-02):** `trex/smc/twisted_smc.py` provides the twist-weight logic and base class; value
+head training and a full TSMC baseline runner are still pending.
 
 The Mechanism: This Value Function is used to bias the resampling step of a Particle Filter. We maintain a population of "thoughts." At every step (e.g., every newline), we kill off thoughts with low value estimates and clone thoughts with high value estimates.
 

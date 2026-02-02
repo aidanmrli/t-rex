@@ -1,6 +1,6 @@
 # Unit Testing Plan for T-REX
 
-**Last Updated:** 2026-01-28 (Completed Phases 2-4: SMC, TSMC, Tempering)
+**Last Updated:** 2026-02-02 (SMC/TSMC/Tempering tests implemented; utils/models coverage added)
 
 **NOTE:** This plan should be updated as tests are implemented. Mark items with ✅ when complete.
 
@@ -52,22 +52,25 @@ trex/
 │   │   └── test_math_verifier.py      # MathVerifier class, backends
 │   ├── test_baselines/
 │   │   ├── __init__.py
-│   │   ├── test_config.py             # Config validation
-│   │   ├── test_reward_functions.py   # Reward computation (mocked verifier)
-│   │   └── test_checkpoint_manager.py # Checkpoint save/load
-│   ├── test_smc/                      # TDD: Write before implementing
+│   │   └── test_smc_config.py         # SMC config validation
+│   ├── test_models/
+│   │   ├── __init__.py
+│   │   └── test_reward_model.py       # PRM/ORM wrapper
+│   ├── test_smc/
 │   │   ├── __init__.py
 │   │   ├── test_resampling.py         # Multinomial, systematic, stratified
 │   │   ├── test_particle_filter.py    # Particle count, weight invariants
-│   │   └── test_twisted_smc.py        # Twist ratio computation
-│   ├── test_tempering/                # TDD: Write before implementing
+│   │   ├── test_twisted_smc.py        # Twist ratio computation
+│   │   └── test_llm_particle_filter.py# Step-wise rollout and stop handling
+│   ├── test_tempering/
 │   │   ├── __init__.py
 │   │   ├── test_temperature_ladder.py # Beta schedule generation
-│   │   ├── test_swap_schedule.py      # Non-reversible alternating schedule
 │   │   └── test_exchange.py           # Acceptance probability
-│   └── test_transport/                # TDD: Write before implementing
-│       ├── __init__.py
-│       └── test_block_gibbs.py        # Mask selection, acceptance ratio
+│   ├── test_utils/
+│   │   ├── __init__.py
+│   │   └── test_efficiency_tracker.py # Efficiency metrics tracking
+│   └── test_transport/
+│       └── __init__.py                # Placeholder (tests pending)
 ```
 
 ---
@@ -1132,7 +1135,10 @@ def requires_math_verify():
 
 ## 6. pytest Configuration
 
-Add to `pyproject.toml`:
+**Note:** `pyproject.toml` currently points `testpaths` at `./tests`, but the T-REX suite lives in
+`trex/tests`. Either run pytest with an explicit path (see below) or update `testpaths` to `trex/tests`.
+
+If updating `pyproject.toml`, use:
 
 ```toml
 [tool.pytest.ini_options]
@@ -1162,30 +1168,27 @@ exclude_lines = [
 
 ## 7. Implementation Order
 
-### Phase 1: Existing Code (Week 1)
+### Phase 1: Eval + Core Utilities (Complete)
 
-1. [x] Create `trex/tests/` directory structure
-2. [x] Create `conftest.py` with fixtures
-3. [x] Implement `test_parser.py` - Answer extraction tests (77 tests)
-4. [x] Implement `test_grader.py` - Math comparison tests (73 tests)
-5. [x] Implement `test_math_verifier.py` - Verifier integration tests (42 tests)
+1. [x] Create `trex/tests/` directory structure + `conftest.py`
+2. [x] Implement `test_parser.py`, `test_grader.py`, `test_math_verifier.py`
+3. [x] Implement `test_reward_model.py` and `test_efficiency_tracker.py`
+4. [x] Implement `test_smc_config.py` for baseline configs
 
-### Phase 2: SMC Foundation (TDD - Week 2)
+### Phase 2: SMC Foundation (Complete)
 
-7. [x] Write `test_resampling.py` BEFORE implementing `resampling.py`
-8. [x] Write `test_particle_filter.py` BEFORE implementing `particle_filter.py`
-9. [x] Implement the SMC modules to pass the tests (37 tests passing)
+5. [x] Implement `test_resampling.py`, `test_particle_filter.py`
+6. [x] Implement `test_llm_particle_filter.py`
+7. [x] Implement `test_twisted_smc.py`
 
-### Phase 3: TSMC (TDD - Week 3)
+### Phase 3: Parallel Tempering (Complete)
 
-10. [x] Write `test_twisted_smc.py` BEFORE implementing
-11. [x] Implement `trex/smc/twisted_smc.py` to pass tests (19 tests passing)
+8. [x] Implement `test_temperature_ladder.py`
+9. [x] Implement `test_exchange.py`
 
-### Phase 4: Parallel Tempering (TDD - Week 4)
+### Phase 4: Transport (Pending)
 
-12. [x] Write `test_temperature_ladder.py` BEFORE implementing
-13. [x] Write `test_exchange.py` BEFORE implementing
-14. [x] Implement `trex/tempering/` module to pass tests (35 tests passing)
+10. [ ] Add tests under `trex/tests/test_transport/` once transport modules exist
 
 ---
 
@@ -1244,4 +1247,3 @@ jobs:
 - **Numerical Tests**: Use `np.isclose()` or `pytest.approx()` for floating-point comparisons
 - **Efficiency Tracker Tests Removed**: The tests for `efficiency_tracker.py` were removed as this component is non-critical, arbitrary, and subject to frequent changes. Testing it adds maintenance overhead with little value.
 - **PyTorch vs NumPy**: All SMC and tensor-related tests (resampling, particle filtering) MUST use `torch` instead of `numpy`. This ensures consistency with the main T-REX codebase which relies heavily on PyTorch for model interaction, gradient support, and GPU acceleration.
-

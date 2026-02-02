@@ -1,6 +1,6 @@
 # Implementation Plan for T-REX
 
-**Last Updated:** 2026-01-29
+**Last Updated:** 2026-02-02
 
 **NOTE:** We should always update this plan with our progress once we have implemented something and it works.
 
@@ -26,19 +26,25 @@ We should have three abstract components:
 | **Datasets** | `trex/data/*.jsonl` | Complete | GSM8K, MATH, MATH-500 |
 | **SLURM Scripts** | `trex/scripts/*.sh` | Complete | Auto-requeue, checkpointing |
 | **Standard SMC Steering** | `trex/baselines/smc_steering_baseline.py` | Complete | PRM/ORM guided, SLURM checkpointing |
+| **SMC Core + Resampling** | `trex/smc/particle_filter.py`, `trex/smc/resampling.py` | Complete | Unit-tested |
+| **LLM Particle Filter** | `trex/smc/llm_particle_filter.py` | Complete | Step-wise generation, PRM scoring |
+| **Twisted SMC Core** | `trex/smc/twisted_smc.py` | Complete | Twist weights + tests; value head pending |
+| **Tempering Primitives** | `trex/tempering/*.py` | Complete | Temperature ladder, swap pairs, replica exchange |
+| **Efficiency Tracking** | `trex/utils/efficiency_tracker.py` | Complete | Used by RL baselines |
 
 ### 🔄 Ready for Testing
 
 | Component | Location | Status | Notes |
 |-----------|----------|--------|-------|
 | **PPO Baseline** | `trex/baselines/ppo_reward_func.py` | Ready | Uses GAE, critic network |
+| **SMC Steering Re-run** | `trex/baselines/smc_steering_baseline.py` | Ready | Post stop-string fix; needs re-eval |
 
 ### ❌ Not Yet Implemented
 
 | Component | Priority | Complexity | Dependencies |
 |-----------|----------|------------|--------------|
-| Twisted SMC (TSMC) | High | Medium | Value head training, SMC infrastructure |
-| Parallel Tempering | Medium | High | Multiple temperature chains, exchange mechanism |
+| Value Head + TSMC Baseline | High | Medium | Value head training, TSMC runner |
+| Parallel Tempering (Full) | Medium | High | Multi-chain orchestration, exchange integration |
 | Transport Mechanisms | Medium | High | Critic network, Block-Gibbs editor |
 | Replica Exchange SMC | Low | High | Parallel tempering + SMC |
 
@@ -140,8 +146,8 @@ We should be able to use all of these as the value head in a plug and play fashi
 3. **Attention-pooled:** Pool over sequence before prediction - For long contexts
 4. **Transformers**
 
-**Files to Create:**
-- `trex/models/__init__.py`
+**Files to Create/Update:**
+- `trex/models/__init__.py` (update exports)
 - `trex/models/value_head.py`
 - `trex/models/twist_model.py`
 
@@ -199,6 +205,8 @@ class ValueTrainingConfig:
 **Implementation:**
 - [x] Extend `trex/smc/particle_filter.py` to support twist-based weighting
 - [x] Create `trex/smc/twisted_smc.py` - TSMC-specific logic
+- [ ] Create `trex/models/value_head.py` and `trex/models/twist_model.py`
+- [ ] Create `trex/training/value_trainer.py` and `trex/training/trajectory_buffer.py`
 - [ ] Create `trex/baselines/tsmc_baseline.py` - Evaluation runner
 
 **Weight Computation:**
@@ -214,8 +222,11 @@ def compute_twisted_weights(values_t, values_t_minus_1):
     return values_t / (values_t_minus_1 + 1e-8)
 ```
 
-**Files to Create:**
-- `trex/smc/twisted_smc.py`
+**Files Remaining:**
+- `trex/models/value_head.py`
+- `trex/models/twist_model.py`
+- `trex/training/value_trainer.py`
+- `trex/training/trajectory_buffer.py`
 - `trex/baselines/tsmc_baseline.py`
 - `trex/scripts/run_tsmc_baseline.sh`
 
@@ -248,9 +259,9 @@ S_even = {(2,3), (4,5), (6,7), ...}  # Even timesteps
 By alternating between these sets, particles flow ballistically through the ladder instead of diffusing randomly.
 
 **Implementation:**
-- [ ] Create `trex/tempering/temperature_ladder.py` - Temperature schedule management
+- [x] Create `trex/tempering/temperature_ladder.py` - Temperature schedule + swap pairs
+- [x] Create `trex/tempering/exchange.py` - Acceptance ratios + swap primitive
 - [ ] Create `trex/tempering/parallel_chains.py` - Multi-chain orchestration
-- [ ] Create `trex/tempering/swap_schedule.py` - Non-reversible alternating schedule
 - [ ] GPU parallelization: Each temperature on subset of GPUs
 
 **Design:**
@@ -265,11 +276,9 @@ class TemperingConfig:
     non_reversible: bool = True    # Use deterministic alternating schedule
 ```
 
-**Files to Create:**
-- `trex/tempering/__init__.py`
-- `trex/tempering/temperature_ladder.py`
+**Files Remaining:**
 - `trex/tempering/parallel_chains.py`
-- `trex/tempering/swap_schedule.py`
+- `trex/tempering/diagnostics.py`
 
 ---
 
@@ -312,16 +321,16 @@ When using Block-Gibbs proposals from base model, the likelihood ratio cancels:
 This means we only need to evaluate the constraint φ, not compute sequence log-probs!
 
 **Implementation:**
-- [ ] Create `trex/tempering/exchange.py` - Non-reversible replica exchange logic
-- [ ] Implement alternating swap schedule (odd/even sets)
-- [ ] Implement acceptance ratio with constraint-only evaluation
+- [x] Create `trex/tempering/exchange.py` - Replica exchange logic
+- [x] Implement alternating swap schedule (odd/even sets) in `get_swap_pairs()`
+- [x] Implement acceptance ratio with constraint-only evaluation
 - [ ] Track exchange statistics and flow direction for diagnostics
 
 **Swap Schedule Implementation:**
 ```python
 def get_swap_pairs(timestep: int, num_temperatures: int) -> List[Tuple[int, int]]:
     """
-    Get swap pairs for non-reversible parallel tempering.
+    Get swap pairs for non-reversible parallel tempering (0-indexed).
 
     Args:
         timestep: Current timestep (determines odd/even set)
@@ -331,16 +340,14 @@ def get_swap_pairs(timestep: int, num_temperatures: int) -> List[Tuple[int, int]
         List of (k, k+1) pairs to attempt swapping
     """
     if timestep % 2 == 1:  # Odd timestep
-        # S_odd = {(1,2), (3,4), (5,6), ...}
-        return [(k, k+1) for k in range(1, num_temperatures, 2)]
+        # S_odd = {(0,1), (2,3), (4,5), ...}
+        return [(k, k + 1) for k in range(0, num_temperatures, 2)]
     else:  # Even timestep
-        # S_even = {(2,3), (4,5), (6,7), ...}
-        return [(k, k+1) for k in range(2, num_temperatures, 2)]
+        # S_even = {(1,2), (3,4), (5,6), ...}
+        return [(k, k + 1) for k in range(1, num_temperatures, 2)]
 ```
 
-**Files to Create:**
-- `trex/tempering/exchange.py`
-- `trex/tempering/swap_schedule.py`
+**Files Remaining:**
 - `trex/tempering/diagnostics.py`
 
 ---
@@ -507,9 +514,9 @@ Phase 3: Online Learning (Self-Distillation)
 8. [ ] TSMC baseline evaluation
 
 ### Sprint 3: Parallel Tempering (Week 5-6)
-9. [ ] Temperature ladder
+9. [x] Temperature ladder + swap pairs
 10. [ ] Parallel chains orchestration
-11. [ ] Replica exchange mechanism
+11. [x] Replica exchange mechanism (core)
 12. [ ] Diagnostics and visualization
 
 ### Sprint 4: Transport Mechanisms (Week 7-8)
@@ -551,22 +558,27 @@ Each component should have:
 
 **Test Files Structure:**
 ```
-tests/
+trex/tests/
+├── test_eval/
+│   ├── test_parser.py
+│   ├── test_grader.py
+│   └── test_math_verifier.py
+├── test_baselines/
+│   └── test_smc_config.py
+├── test_models/
+│   └── test_reward_model.py
 ├── test_smc/
-│   ├── test_particle_filter.py
 │   ├── test_resampling.py
+│   ├── test_particle_filter.py
 │   ├── test_twisted_smc.py
 │   └── test_llm_particle_filter.py
-├── test_models/
-│   ├── test_value_head.py
-│   ├── test_critic_head.py
-│   └── test_reward_model.py
 ├── test_tempering/
 │   ├── test_temperature_ladder.py
 │   └── test_exchange.py
+├── test_utils/
+│   └── test_efficiency_tracker.py
 └── test_transport/
-    ├── test_block_gibbs.py
-    └── test_learned_transport.py
+    └── __init__.py
 ```
 
 ---

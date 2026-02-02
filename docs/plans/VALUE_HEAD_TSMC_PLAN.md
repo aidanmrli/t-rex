@@ -1,7 +1,8 @@
 # Implementation Plan: Value Head + Twisted SMC Baseline
 
-**Status:** Planning Phase  
+**Status:** Planning Phase (Value head + training not implemented; TwistedSMC core + tests exist)  
 **Created:** 2026-01-31  
+**Last Updated:** 2026-02-02  
 **Goal:** Implement Value Head architecture and training to enable end-to-end Twisted SMC testing
 
 ---
@@ -28,13 +29,16 @@ This plan implements the **Value Head** and **Twisted SMC (TSMC) Baseline** comp
 **Existing Infrastructure:**
 - [`trex/smc/twisted_smc.py`](trex/smc/twisted_smc.py:1) - Core TSMC logic with `compute_twisted_weights()` and `TwistedSMC` class
 - [`trex/smc/llm_particle_filter.py`](trex/smc/llm_particle_filter.py:1) - LLM-aware particle filter (extends base ParticleFilter)
+- [`trex/tests/test_smc/test_twisted_smc.py`](trex/tests/test_smc/test_twisted_smc.py:1) - Twisted SMC unit tests
+- [`trex/tests/test_smc/test_llm_particle_filter.py`](trex/tests/test_smc/test_llm_particle_filter.py:1) - Stepwise generation tests
 - [`openrlhf/models/model.py`](openrlhf/models/model.py:1) - Reference implementation of value head attachment
 - [`trex/models/reward_model.py`](trex/models/reward_model.py:1) - PRM/ORM wrapper pattern to follow
 
 **Key Observations:**
-1. The `TwistedSMC` class already exists and expects a `value_function: Callable[[List[str]], torch.Tensor]`
-2. OpenRLHF's `get_llm_for_sequence_regression()` shows how to attach heads to base LLMs
-3. The Value Head must output values in [0, 1] (sigmoid) per HIGH_LEVEL_CONTEXT.md Section 2.4
+1. `TwistedSMC` already expects a `value_function: Callable[[List[str]], torch.Tensor]`
+2. `LLMParticleFilter` already handles step-wise rollouts and PRM scoring; we can reuse its stepping logic
+3. OpenRLHF's `get_llm_for_sequence_regression()` shows how to attach heads to base LLMs
+4. The Value Head must output values in [0, 1] (sigmoid) per HIGH_LEVEL_CONTEXT.md Section 2.4
 
 ### 2.2 Value Head Architecture Options
 
@@ -69,7 +73,7 @@ Per IMPLEMENTATION_PLAN.md Section 2.1, we support multiple architectures:
 ```
 trex/
 ├── models/
-│   ├── __init__.py              # Add ValueHead, TwistModel exports
+│   ├── __init__.py              # Extend exports for ValueHead/TwistModel
 │   ├── value_head.py            # NEW: Value head architectures
 │   └── twist_model.py           # NEW: Base LLM + Value Head wrapper
 ├── training/
@@ -77,7 +81,9 @@ trex/
 │   ├── value_trainer.py         # NEW: Self-distillation training loop
 │   └── trajectory_buffer.py     # NEW: Rollout storage
 ├── smc/
-│   └── tsmc_particle_filter.py  # NEW: TSMC with value head scoring
+│   ├── twisted_smc.py           # EXISTS: Twist weights + TwistedSMC base
+│   ├── llm_particle_filter.py   # EXISTS: LLM rollouts + PRM scoring
+│   └── tsmc_particle_filter.py  # NEW: TSMC with value head scoring (or extend llm_particle_filter.py)
 └── baselines/
     └── tsmc_baseline.py         # NEW: Evaluation runner
 ```
@@ -184,6 +190,10 @@ class TwistModel(nn.Module):
 ### 3.4 TSMC Particle Filter (`trex/smc/tsmc_particle_filter.py`)
 
 **Purpose:** Extend `TwistedSMC` with LLM generation and value head scoring.
+
+**Implementation Note:** This can be a new thin wrapper (`tsmc_particle_filter.py`) or an extension of
+`trex/smc/llm_particle_filter.py` with a switchable scorer (PRM vs. value head). Prefer the minimal
+change that avoids duplicating rollout logic.
 
 **Interface:**
 ```python
@@ -510,8 +520,8 @@ Similar structure to `run_smc_baseline.sh`, but:
 - [ ] Integration test: TwistModel forward pass
 
 ### Phase 2: TSMC Particle Filter (Week 1-2)
-- [ ] Implement `trex/smc/tsmc_particle_filter.py`
-- [ ] Integrate with existing `TwistedSMC` class
+- [ ] Implement `trex/smc/tsmc_particle_filter.py` **or** extend `trex/smc/llm_particle_filter.py`
+- [ ] Integrate with existing `TwistedSMC` class + `value_function` hook
 - [ ] Unit tests for TSMC loop
 - [ ] Smoke test on small dataset
 
@@ -623,9 +633,9 @@ trex/models/twist_model.py         # ~200 lines
 trex/training/__init__.py          # ~10 lines
 trex/training/trajectory_buffer.py # ~100 lines
 trex/training/value_trainer.py     # ~250 lines
-trex/smc/tsmc_particle_filter.py   # ~200 lines
+trex/smc/tsmc_particle_filter.py   # ~200 lines (or extend llm_particle_filter.py)
 trex/baselines/tsmc_baseline.py    # ~300 lines
-trex/baselines/tsmc_config.py      # ~50 lines
+trex/baselines/tsmc_config.py      # ~50 lines (or extend smc_config.py)
 trex/scripts/train_value_head.sh   # ~80 lines
 trex/scripts/run_tsmc_baseline.sh  # ~80 lines
 
