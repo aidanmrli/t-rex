@@ -13,11 +13,18 @@ compute scaling in language models.
 
 import logging
 import re
+from copy import deepcopy
 from typing import List, Optional, TYPE_CHECKING
 
 import torch
 
 from trex.smc.particle_filter import ParticleFilter, Particle, SMCConfig
+from trex.smc.resampling import (
+    multinomial_resampling,
+    systematic_resampling,
+    stratified_resampling,
+    compute_ess,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +100,19 @@ class LLMParticleFilter(ParticleFilter):
         # SMC loop iteration count (expand → score → resample cycles)
         # Note: Different from reasoning_step_count which tracks "## Step N:" in text
         self._smc_iteration = 0
+        self._last_generation_progressed = False
+
+    def initialize(self, prompt: str) -> None:
+        """
+        Initialize particles with the given prompt and set PRM metadata.
+
+        Args:
+            prompt: Starting text for all particles
+        """
+        super().initialize(prompt)
+        for p in self.particles:
+            p.metadata["prm_preamble"] = prompt
+            p.metadata["prm_steps"] = []
     
     @property
     def smc_iteration(self) -> int:
@@ -145,7 +165,7 @@ class LLMParticleFilter(ParticleFilter):
             return text
 
         # Check if text ends with partial step header from stop string ("## Step")
-        # This happens because we use stop=["## Step"] with include_stop_str_in_output=True
+        # This can happen if stop strings are included in output upstream.
         if stripped.endswith("## Step"):
             # Complete the partial header with the correct number
             next_step = self._get_next_step_number(text)
@@ -195,16 +215,69 @@ class LLMParticleFilter(ParticleFilter):
         
         # Hit max reasoning steps
         step_count = self._count_reasoning_steps(text)
-        if step_count >= self.config.max_reasoning_steps:
+        if step_count > self.config.max_reasoning_steps:
             return True
         
         return False
+
+    def _get_active_indices(self) -> List[int]:
+        """Indices of particles that are still active (not finished)."""
+        return [i for i, p in enumerate(self.particles) if not p.metadata.get("finished")]
+
+    def _get_pending_indices(self) -> List[int]:
+        """
+        Indices of particles that still need generation for the current step.
+
+        Pending = active and not waiting for the next step header.
+        """
+        return [
+            i
+            for i, p in enumerate(self.particles)
+            if (not p.metadata.get("finished")) and (not p.metadata.get("needs_step_header"))
+        ]
+
+    def _resample_active(
+        self, active_indices: List[int], active_weights: torch.Tensor
+    ) -> None:
+        """
+        Resample only the active particles, preserving finished ones.
+
+        This keeps finished particles fixed (not duplicated or dropped) while
+        resampling the active subset based on their weights.
+        """
+        if not active_indices:
+            return
+
+        n_active = len(active_indices)
+
+        if self.config.resampling_method == "multinomial":
+            indices = multinomial_resampling(active_weights, n_active)
+        elif self.config.resampling_method == "systematic":
+            indices = systematic_resampling(active_weights)
+        elif self.config.resampling_method == "stratified":
+            indices = stratified_resampling(active_weights)
+        else:
+            raise ValueError(f"Unknown resampling method: {self.config.resampling_method}")
+
+        indices_list = indices.tolist()
+        old_particles = self.particles
+        resampled = [deepcopy(old_particles[active_indices[idx]]) for idx in indices_list]
+
+        for dst_idx, new_particle in zip(active_indices, resampled):
+            self.particles[dst_idx] = new_particle
+
+        # Reset weights to uniform after resampling (standard SMC behavior).
+        n_total = len(self.particles)
+        uniform_weight = 1.0 / n_total
+        self._weights = torch.full((n_total,), uniform_weight, device=self._device, dtype=torch.float32)
+        for p in self.particles:
+            p.weight = uniform_weight
     
     def expand_particles(self) -> bool:
         """
         Generate next reasoning step for all active particles.
 
-        Uses stop=["## Step"] to detect step boundaries:
+        Uses stop sequences to detect step boundaries:
         - If model outputs "## Step", it wants to continue → keep in SMC loop
         - If model finishes without "## Step" (EOS), it's done → mark finished
 
@@ -222,86 +295,133 @@ class LLMParticleFilter(ParticleFilter):
         - Max reasoning steps reached
 
         Returns:
-            True if there are particles still generating, False if all finished
+            True if any new text was generated, False otherwise
         """
         from vllm import SamplingParams
 
         texts = self.get_particle_texts()
 
-        # Prepare prompts for active particles
-        prompts = []
-        active_indices = []  # Track which particles to generate for
+        # Only generate for pending particles (active and not waiting for next header)
+        pending_indices = self._get_pending_indices()
 
-        for i, text in enumerate(texts):
-            if self.particles[i].metadata.get("finished"):
-                # Don't generate for finished particles
-                prompts.append(text)
-            else:
-                active_indices.append(i)
-                # Use text directly - step headers are injected after scoring
-                prompts.append(text)
+        if not pending_indices:
+            # Nothing to generate (all finished or waiting for next header)
+            self._last_generation_progressed = False
+            return any(not p.metadata.get("finished") for p in self.particles)
 
-        if not active_indices:
-            # All particles finished
-            return False
+        # Use dynamic stop sequence when all pending particles are on the same next step.
+        next_steps = {self._get_next_step_number(texts[i]) for i in pending_indices}
+        if len(next_steps) == 1:
+            next_step = next_steps.pop()
+            stop_sequences = [f"## Step {next_step}:"]
+        else:
+            stop_sequences = ["## Step"]
 
-        # Generate until "## Step" (next step) or EOS (finished)
-        # Exclude stop string from output - we use finish_reason to detect it
+        # Generate until next step header or EOS. Exclude stop string from output.
         sampling_params = SamplingParams(
             n=1,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens_per_step,
-            stop=["## Step"],
+            stop=stop_sequences,
             include_stop_str_in_output=False,
         )
 
-        # Only generate for active particles
-        active_prompts = [prompts[i] for i in active_indices]
-        outputs = self.generator.generate(active_prompts, sampling_params)
+        pending_prompts = [texts[i] for i in pending_indices]
+        outputs = self.generator.generate(pending_prompts, sampling_params)
 
-        # Map outputs back to particles
-        output_idx = 0
-        still_generating = False
+        any_progress = False
 
-        for i in range(len(self.particles)):
-            if self.particles[i].metadata.get("finished"):
-                continue
+        for offset, particle_idx in enumerate(pending_indices):
+            output = outputs[offset].outputs[0]
+            continuation = output.text
+            if continuation:
+                any_progress = True
 
-            if output_idx < len(outputs):
-                output = outputs[output_idx].outputs[0]
-                continuation = output.text
-                self.particles[i].text = prompts[i] + continuation
+            self.particles[particle_idx].text = pending_prompts[offset] + continuation
 
-                # Check finish_reason to understand why generation stopped
-                if output.finish_reason == "stop":
-                    # Model hit "## Step" stop string - it wants to continue
-                    # Mark that we need to inject header AFTER scoring
-                    self.particles[i].metadata["needs_step_header"] = True
-                    logger.debug(
-                        f"Particle {i} hit step boundary, will inject header after scoring"
-                    )
-                else:
-                    # Model finished naturally (EOS or length limit) - it's done
-                    self.particles[i].metadata["finished"] = True
-                    self.particles[i].metadata["finish_reason"] = output.finish_reason
-                    logger.debug(
-                        f"Particle {i} finished naturally: finish_reason={output.finish_reason}"
-                    )
-
-                output_idx += 1
+            # Check finish_reason to understand why generation stopped
+            if output.finish_reason == "stop":
+                # Model hit step boundary - mark for header injection after scoring
+                self.particles[particle_idx].metadata["needs_step_header"] = True
+                logger.debug(
+                    f"Particle {particle_idx} hit step boundary, will inject header after scoring"
+                )
+            elif output.finish_reason == "length":
+                # Max tokens reached mid-step: keep generating in the same step
+                self.particles[particle_idx].metadata["finish_reason"] = "length"
+                self.particles[particle_idx].metadata["truncated_step"] = True
+            else:
+                # Model finished naturally (EOS) or other stop condition
+                self.particles[particle_idx].metadata["finished"] = True
+                self.particles[particle_idx].metadata["finish_reason"] = output.finish_reason
+                logger.debug(
+                    f"Particle {particle_idx} finished naturally: finish_reason={output.finish_reason}"
+                )
 
             # Track per-particle reasoning step count
-            reasoning_step_count = self._count_reasoning_steps(self.particles[i].text)
-            self.particles[i].metadata["reasoning_step_count"] = reasoning_step_count
+            reasoning_step_count = self._count_reasoning_steps(self.particles[particle_idx].text)
+            self.particles[particle_idx].metadata["reasoning_step_count"] = reasoning_step_count
 
-            # Check if particle is finished (has boxed answer, hit limits, etc.)
-            if self._is_finished(self.particles[i]):
-                self.particles[i].metadata["finished"] = True
-            elif not self.particles[i].metadata.get("finished"):
-                still_generating = True
+            # Check if particle is finished (boxed answer, max chars, etc.)
+            if self._is_finished(self.particles[particle_idx]):
+                self.particles[particle_idx].metadata["finished"] = True
 
-        self._smc_iteration += 1
-        return still_generating and self._smc_iteration < self.config.max_smc_iterations
+        self._last_generation_progressed = any_progress
+        return any(not p.metadata.get("finished") for p in self.particles)
+
+    def _expand_token_chunk(self, active_indices: List[int]) -> bool:
+        """
+        Generate a fixed token chunk for active particles (token-interval mode).
+
+        Returns:
+            True if any new text was generated, False otherwise.
+        """
+        from vllm import SamplingParams
+
+        if not active_indices:
+            self._last_generation_progressed = False
+            return False
+
+        prompts = [self.particles[i].text for i in active_indices]
+
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=self.config.temperature,
+            max_tokens=self.config.resample_every_tokens,
+            stop=None,
+            include_stop_str_in_output=False,
+        )
+
+        outputs = self.generator.generate(prompts, sampling_params)
+
+        any_progress = False
+
+        for offset, particle_idx in enumerate(active_indices):
+            output = outputs[offset].outputs[0]
+            continuation = output.text
+            if continuation:
+                any_progress = True
+
+            self.particles[particle_idx].text = prompts[offset] + continuation
+
+            if continuation:
+                steps = self.particles[particle_idx].metadata.setdefault("prm_steps", [])
+                steps.append(continuation)
+                self.particles[particle_idx].metadata["token_chunk_count"] = len(steps)
+
+            if output.finish_reason == "length":
+                self.particles[particle_idx].metadata["finish_reason"] = "length"
+                self.particles[particle_idx].metadata["truncated_chunk"] = True
+            else:
+                self.particles[particle_idx].metadata["finished"] = True
+                self.particles[particle_idx].metadata["finish_reason"] = output.finish_reason
+
+            # Check if particle is finished (boxed answer, max chars, etc.)
+            if self._is_finished(self.particles[particle_idx]):
+                self.particles[particle_idx].metadata["finished"] = True
+
+        self._last_generation_progressed = any_progress
+        return any_progress
 
     def inject_next_step_headers(self) -> None:
         """
@@ -310,8 +430,17 @@ class LLMParticleFilter(ParticleFilter):
         Called AFTER scoring to ensure PRM scores actual content, not empty headers.
         """
         for particle in self.particles:
+            if particle.metadata.get("finished"):
+                particle.metadata.pop("needs_step_header", None)
+                continue
+
             if particle.metadata.pop("needs_step_header", False):
                 next_step = self._get_next_step_number(particle.text)
+                if next_step > self.config.max_reasoning_steps:
+                    particle.metadata["finished"] = True
+                    particle.metadata["max_reasoning_steps_reached"] = True
+                    continue
+
                 particle.text += f"\n\n## Step {next_step}:"
                 logger.debug(
                     f"Injected Step {next_step} header after scoring"
@@ -340,7 +469,18 @@ class LLMParticleFilter(ParticleFilter):
         for i, particle in enumerate(self.particles):
             if not particle.metadata.get("finished"):
                 active_indices.append(i)
-                formatted = self.reward_model.format_text_for_scoring(particle.text)
+                if self.config.resampling_unit == "token":
+                    steps = particle.metadata.get("prm_steps", [])
+                    if steps:
+                        steps_for_prm = list(steps)
+                        preamble = particle.metadata.get("prm_preamble", "")
+                        if preamble:
+                            steps_for_prm[0] = preamble + steps_for_prm[0]
+                        formatted = self.reward_model.format_for_prm(steps_for_prm)
+                    else:
+                        formatted = particle.text + self.reward_model.prm_config.step_separator_token
+                else:
+                    formatted = self.reward_model.format_text_for_scoring(particle.text)
                 active_texts.append(formatted)
 
         # If no active particles, return cached scores or ones
@@ -396,6 +536,92 @@ class LLMParticleFilter(ParticleFilter):
             self.particles[i].metadata["orm_score"] = score
         
         return self.particles[best_idx]
+
+    def _step_by_token_chunk(self) -> bool:
+        """
+        SMC step for token-interval mode: generate a fixed chunk, score, resample.
+
+        Returns:
+            True if there are particles still generating, False otherwise
+        """
+        import warnings
+
+        active_indices = self._get_active_indices()
+        if not active_indices:
+            return False
+
+        self._expand_token_chunk(active_indices)
+
+        step_scores = self.score_particles()
+
+        SCORE_EPSILON = 1e-8
+        active_indices = self._get_active_indices()
+        if active_indices:
+            active_scores = step_scores[active_indices]
+        else:
+            active_scores = step_scores
+
+        if active_scores.numel() > 0 and torch.all(active_scores < SCORE_EPSILON):
+            warnings.warn(
+                f"All PRM scores are near-zero (< {SCORE_EPSILON}) at SMC iteration "
+                f"{self._smc_iteration}. This indicates all particles are considered "
+                "completely wrong by the PRM. Possible causes: degenerate particles, "
+                "PRM misbehavior, or formatting issues. "
+                "Terminating SMC early - check particle content for debugging.",
+                UserWarning,
+                stacklevel=2
+            )
+            for p in self.particles:
+                if not p.metadata.get("finished"):
+                    p.metadata["finished"] = True
+                p.metadata["degenerate_termination"] = True
+            return False
+
+        current_weights = self.get_weights()
+        active_indices = self._get_active_indices()
+        if active_indices:
+            active_weights = current_weights[active_indices] * step_scores[active_indices]
+        else:
+            active_weights = current_weights * step_scores
+
+        if active_weights.numel() > 0:
+            ess = compute_ess(active_weights)
+            logger.debug(
+                f"SMC iteration {self._smc_iteration}: ESS={ess:.2f} "
+                f"(threshold={self.config.ess_threshold * len(active_indices):.2f})"
+            )
+        else:
+            ess = None
+
+        resampled = False
+        if self.config.resampling_strategy == "every_step":
+            self._resample_active(active_indices, active_weights)
+            resampled = True
+        elif self.config.resampling_strategy == "ess_adaptive":
+            if active_weights.numel() > 0:
+                if ess is not None and ess < self.config.ess_threshold * len(active_indices):
+                    self._resample_active(active_indices, active_weights)
+                    resampled = True
+                else:
+                    new_weights = current_weights.clone()
+                    for idx, weight in zip(active_indices, active_weights):
+                        new_weights[idx] = weight
+                    self.set_weights(new_weights)
+                    self.normalize_weights()
+
+        if resampled:
+            logger.debug(f"SMC iteration {self._smc_iteration}: Resampled particles")
+
+        self._smc_iteration += 1
+
+        if self._smc_iteration >= self.config.max_smc_iterations:
+            for p in self.particles:
+                if not p.metadata.get("finished"):
+                    p.metadata["finished"] = True
+                    p.metadata["max_smc_iterations_reached"] = True
+            return False
+
+        return any(not p.metadata.get("finished") for p in self.particles)
     
     def step(self) -> bool:
         """
@@ -423,21 +649,50 @@ class LLMParticleFilter(ParticleFilter):
         Where ψ is the twist/value function estimate.
 
         Order of operations:
-        1. expand_particles() - generate content (no headers injected yet)
+        1. expand_particles() - generate content until step boundary (no headers injected yet)
         2. score_particles() - score actual content
-        3. inject_next_step_headers() - add headers AFTER scoring
-        4. resample() - based on scores
+        3. resample() - based on scores (active particles only)
+        4. inject_next_step_headers() - add headers AFTER resampling
 
         Returns:
             True if there are particles still generating, False if all finished
         """
         import warnings
 
-        # Expand particles (generate next step, but don't inject headers yet)
-        should_continue = self.expand_particles()
+        if self.config.resampling_unit == "token":
+            return self._step_by_token_chunk()
+
+        # Complete the current reasoning step for all active particles.
+        chunk_calls = 0
+        while True:
+            active_indices = self._get_active_indices()
+            if not active_indices:
+                return False
+
+            pending_indices = self._get_pending_indices()
+            if not pending_indices:
+                break
+
+            self.expand_particles()
+            progressed = self._last_generation_progressed
+            chunk_calls += 1
+
+            # Fallback: if no progress or too many chunks, force a step boundary.
+            if (not progressed) or (chunk_calls >= self.config.max_step_chunk_calls):
+                if not progressed:
+                    warnings.warn(
+                        "No generation progress detected while completing a step. "
+                        "Forcing a step boundary to avoid an infinite loop. "
+                        "Check stop strings and prompt format.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                for idx in pending_indices:
+                    self.particles[idx].metadata["needs_step_header"] = True
+                    self.particles[idx].metadata["forced_step_boundary"] = True
+                break
 
         # Get PRM scores for the latest step BEFORE injecting next headers
-        # This ensures we score actual content, not empty "## Step N:" headers
         step_scores = self.score_particles()
 
         # Log step scores for debugging
@@ -453,7 +708,13 @@ class LLMParticleFilter(ParticleFilter):
         # This means the PRM thinks ALL particles are completely wrong.
         # Continuing with uniform weights would be random - better to warn and stop.
         SCORE_EPSILON = 1e-8
-        if torch.all(step_scores < SCORE_EPSILON):
+        active_indices = self._get_active_indices()
+        if active_indices:
+            active_scores = step_scores[active_indices]
+        else:
+            active_scores = step_scores
+
+        if active_scores.numel() > 0 and torch.all(active_scores < SCORE_EPSILON):
             warnings.warn(
                 f"All PRM scores are near-zero (< {SCORE_EPSILON}) at SMC iteration "
                 f"{self._smc_iteration}. This indicates all particles are considered "
@@ -465,46 +726,64 @@ class LLMParticleFilter(ParticleFilter):
             )
             # Mark all particles as finished and return False to terminate
             for p in self.particles:
-                p.metadata["finished"] = True
+                if not p.metadata.get("finished"):
+                    p.metadata["finished"] = True
                 p.metadata["degenerate_termination"] = True
             return False
 
-        # MULTIPLICATIVE weight update: w_t = w_{t-1} × PRM(step_t)
+        # MULTIPLICATIVE weight update on active particles only: w_t = w_{t-1} × PRM(step_t)
         current_weights = self.get_weights()
-        new_weights = current_weights * step_scores
+        active_indices = self._get_active_indices()
+        if active_indices:
+            active_weights = current_weights[active_indices] * step_scores[active_indices]
+        else:
+            active_weights = current_weights * step_scores
 
-        self.set_weights(new_weights)
-        self.normalize_weights()
+        # Compute ESS on active subset for logging/decision
+        if active_weights.numel() > 0:
+            ess = compute_ess(active_weights)
+            logger.debug(
+                f"SMC iteration {self._smc_iteration}: ESS={ess:.2f} "
+                f"(threshold={self.config.ess_threshold * len(active_indices):.2f})"
+            )
+        else:
+            ess = None
 
-        # Compute ESS for logging/decision
-        ess = self.effective_sample_size()
-        logger.debug(
-            f"SMC iteration {self._smc_iteration}: ESS={ess:.2f} "
-            f"(threshold={self.config.ess_threshold * self.n_particles:.2f})"
-        )
-
-        # Inject next step headers AFTER scoring but BEFORE resampling
-        # This ensures:
-        # 1. PRM scored actual content, not empty headers
-        # 2. Duplicated particles (from resampling) get the correct headers
-        self.inject_next_step_headers()
-
-        # Resample based on strategy
+        # Resample based on strategy (active particles only)
         resampled = False
         if self.config.resampling_strategy == "every_step":
-            # Standard SMC steering: resample after every reasoning step
-            self.resample()
+            self._resample_active(active_indices, active_weights)
             resampled = True
         elif self.config.resampling_strategy == "ess_adaptive":
-            # Adaptive: only resample when ESS drops below threshold
-            if self.should_resample():
-                self.resample()
-                resampled = True
+            if active_weights.numel() > 0:
+                if ess is not None and ess < self.config.ess_threshold * len(active_indices):
+                    self._resample_active(active_indices, active_weights)
+                    resampled = True
+                else:
+                    new_weights = current_weights.clone()
+                    for idx, weight in zip(active_indices, active_weights):
+                        new_weights[idx] = weight
+                    self.set_weights(new_weights)
+                    self.normalize_weights()
 
         if resampled:
             logger.debug(f"SMC iteration {self._smc_iteration}: Resampled particles")
 
-        return should_continue
+        # Inject next step headers AFTER scoring and resampling
+        self.inject_next_step_headers()
+
+        # Completed one SMC step
+        self._smc_iteration += 1
+
+        if self._smc_iteration >= self.config.max_smc_iterations:
+            for p in self.particles:
+                if not p.metadata.get("finished"):
+                    p.metadata["finished"] = True
+                    p.metadata["max_smc_iterations_reached"] = True
+            return False
+
+        # Continue if there are still active particles
+        return any(not p.metadata.get("finished") for p in self.particles)
     
     def run(self) -> Particle:
         """
@@ -532,10 +811,15 @@ class LLMParticleFilter(ParticleFilter):
         Returns:
             Dictionary with summary statistics
         """
+        active_indices = self._get_active_indices()
+        active_ess = None
+        if self._weights is not None and active_indices:
+            active_ess = compute_ess(self._weights[active_indices])
+
         return {
             "smc_iteration": self._smc_iteration,
             "n_particles": self.n_particles,
-            "ess": self.effective_sample_size() if self._weights is not None else None,
+            "ess": active_ess,
             "n_finished": sum(1 for p in self.particles if p.metadata.get("finished")),
             "avg_step_count": sum(
                 p.metadata.get("reasoning_step_count", 0) for p in self.particles

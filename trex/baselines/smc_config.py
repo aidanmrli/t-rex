@@ -40,6 +40,11 @@ class SMCSteeringConfig:
     
     # Resampling
     resampling_method: str = "systematic"  # "multinomial", "systematic", "stratified"
+    # Resampling unit:
+    # - "step": Resample after a completed reasoning step (## Step N:)
+    # - "token": Resample after a fixed token chunk (no step template enforced)
+    resampling_unit: str = "step"
+    resample_every_tokens: int = 128  # Token chunk size when resampling_unit="token"
     # Resampling strategy:
     # - "every_step": Resample after every SMC step (default, standard for SMC steering).
     #   Weights are reset to uniform after each resample. PRM scores determine which
@@ -52,6 +57,9 @@ class SMCSteeringConfig:
     # Generation parameters
     temperature: float = 0.7
     max_tokens_per_step: int = 512  # Max tokens per generation call
+    # Max number of generation chunks allowed to complete a single reasoning step.
+    # Acts as a fallback if the model doesn't emit the next "## Step N:" header.
+    max_step_chunk_calls: int = 4
     # Max total characters per particle (not tokens - character counting is faster)
     # Rough heuristic: 1 token ≈ 4 chars, so 2048 chars ≈ 512 tokens
     max_total_chars: int = 8192  # ~2048 tokens worth of characters
@@ -114,10 +122,28 @@ Where [answer] is just the final number or expression that solves the problem.""
                 f"Must be one of {valid_strategies}"
             )
 
+        # Validate resampling unit
+        valid_units = ("step", "token")
+        if self.resampling_unit not in valid_units:
+            raise ValueError(
+                f"Invalid resampling_unit: {self.resampling_unit}. "
+                f"Must be one of {valid_units}"
+            )
+
         # Validate ESS threshold
         if not 0.0 < self.ess_threshold <= 1.0:
             raise ValueError(
                 f"ess_threshold must be in (0, 1], got {self.ess_threshold}"
+            )
+
+        if self.max_step_chunk_calls < 1:
+            raise ValueError(
+                f"max_step_chunk_calls must be >= 1, got {self.max_step_chunk_calls}"
+            )
+
+        if self.resample_every_tokens < 1:
+            raise ValueError(
+                f"resample_every_tokens must be >= 1, got {self.resample_every_tokens}"
             )
     
     def to_dict(self) -> Dict[str, Any]:
@@ -138,6 +164,9 @@ Where [answer] is just the final number or expression that solves the problem.""
             "n_particles": self.n_particles,
             "max_smc_iterations": self.max_smc_iterations,
             "max_reasoning_steps": self.max_reasoning_steps,
+            "max_step_chunk_calls": self.max_step_chunk_calls,
+            "resampling_unit": self.resampling_unit,
+            "resample_every_tokens": self.resample_every_tokens,
             "resampling_method": self.resampling_method,
             "resampling_strategy": self.resampling_strategy,
             "ess_threshold": self.ess_threshold,

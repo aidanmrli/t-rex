@@ -161,9 +161,12 @@ class SMCSteeringBaseline:
             problem: Raw problem text
 
         Returns:
-            Formatted prompt ready for generation, ending with "## Step 1:"
+            Formatted prompt ready for generation. In step mode this ends with
+            "## Step 1:", while token mode returns the chat prompt without a step header.
         """
         if not self.config.apply_chat_template:
+            if self.config.resampling_unit == "token":
+                return problem
             return problem + "\n\n## Step 1:"
 
         self._init_generator()
@@ -179,6 +182,9 @@ class SMCSteeringBaseline:
             tokenize=False,
             add_generation_prompt=True,
         )
+
+        if self.config.resampling_unit == "token":
+            return prompt
 
         # Add first step header so model continues from here
         # This prevents the model from outputting "## Step" at the start
@@ -470,6 +476,15 @@ def main():
         help="Resampling method"
     )
     parser.add_argument(
+        "--resampling_unit", type=str, default="step",
+        choices=["step", "token"],
+        help="Resampling unit: 'step' (## Step N:) or 'token' (fixed token chunks)"
+    )
+    parser.add_argument(
+        "--resample_every_tokens", type=int, default=128,
+        help="Token chunk size when resampling_unit='token'"
+    )
+    parser.add_argument(
         "--resampling_strategy", type=str, default="every_step",
         choices=["every_step", "ess_adaptive"],
         help="Resampling strategy: 'every_step' resamples after each SMC step, "
@@ -478,6 +493,10 @@ def main():
     parser.add_argument(
         "--temperature", type=float, default=0.7,
         help="Sampling temperature"
+    )
+    parser.add_argument(
+        "--max_step_chunk_calls", type=int, default=4,
+        help="Max generation chunks to complete a single reasoning step"
     )
     parser.add_argument(
         "--seed", type=int, default=None,
@@ -562,8 +581,11 @@ def main():
         max_reasoning_steps=args.max_reasoning_steps,
         ess_threshold=args.ess_threshold,
         resampling_method=args.resampling_method,
+        resampling_unit=args.resampling_unit,
+        resample_every_tokens=args.resample_every_tokens,
         resampling_strategy=args.resampling_strategy,
         temperature=args.temperature,
+        max_step_chunk_calls=args.max_step_chunk_calls,
         seed=args.seed,
         generator_tp_size=args.generator_tp_size,
         reward_model_tp_size=args.reward_model_tp_size,
