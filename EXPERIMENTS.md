@@ -1,6 +1,6 @@
 # Experiments for T-REX
 
-**Last Updated:** 2026-01-27
+**Last Updated:** 2026-02-01
 
 **NOTE:** We should always update this document once we have planned an experiment and it works. Then, when the experiment has completed, we should immediately update this document with the results.
 
@@ -285,11 +285,49 @@ Added for HPC clusters without internet on compute nodes:
 
 ---
 
+### SMC Steering Baseline
+
+**Purpose:** Evaluate standard SMC steering with PRM guidance as an inference-time compute scaling baseline. This establishes what SMC can achieve before adding twisted targets or parallel tempering.
+
+**Script:** `trex/scripts/tamia/run_smc_baseline.sh`
+**Implementation:** `trex/baselines/smc_steering_baseline.py`, `trex/smc/llm_particle_filter.py`
+
+#### Algorithm (SMC Steering)
+
+```
+Input: Problem prompt, Generator model M, Reward model R (PRM/ORM), N particles
+Output: Best solution with highest ORM score
+
+1. Initialize N particles with the problem prompt (with system prompt)
+2. For each SMC iteration:
+   a. Expand: Generate next reasoning step for each particle (stop at "## Step")
+   b. Score: Get PRM score for latest step
+   c. Update weights: w_t = w_{t-1} × PRM_score
+   d. Resample: Duplicate high-weight particles, prune low-weight ones
+3. Select best particle using ORM (final outcome score)
+```
+
+#### Configuration
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Generator Model | `Qwen/Qwen2.5-7B` | Match other baselines |
+| Reward Model | `Qwen/Qwen2.5-Math-PRM-7B` | Process & outcome reward scoring |
+| Dataset | GSM8K Platinum test (1,209 problems) | Standard eval set |
+| N particles | 16 | Balance compute vs. diversity |
+| Max SMC iterations | 20 | Per-particle generation cycles |
+| Max reasoning steps | 15 | Cap on "## Step N:" patterns |
+| ESS threshold | 0.5 | Trigger for resampling |
+| Temperature | 0.7 | Moderate exploration |
+| Resampling strategy | "every_step" | Standard SMC steering |
+
+---
+
 ## Planned Experiments
 
 ### Experiment 3: GRPO Evaluation on GSM8K
 
-**Status:** RUNNING (Job 150744)
+**Status:** FAILED - BUG IN BEST_OF_N_BASELINE
 
 **Configuration:**
 - Model: Trained GRPO model from Experiment 1
@@ -297,14 +335,76 @@ Added for HPC clusters without internet on compute nodes:
 - N samples: 16
 - Temperatures: 0.0 (greedy), 0.6, 1.0
 
-**To check evaluation progress:**
-```bash
-tail -30 /scratch/l/liaidan/t-rex/slurm/eval-grpo-150744.err
+**Error (Job 150744):**
 ```
+ValueError: n must be 1 when using greedy sampling, got 16.
+```
+
+**Root Cause:**
+vLLM does not allow `n > 1` when `temperature=0` (greedy sampling). The evaluation script tries to generate 16 samples at temperature=0, which is invalid.
+
+**Fix Required:**
+Modify `trex/baselines/best_of_n_baseline.py` to handle greedy decoding differently:
+1. When temperature=0, use n=1 (single greedy sample)
+2. Or skip temperature=0 in the sweep when n > 1
+3. Or loop n times with n=1 for greedy sampling
 
 **Output Location:**
 ```
 /scratch/l/liaidan/t-rex/results/eval_grpo/Qwen2.5-7B/gsm8k_trained_n8/
+```
+
+---
+
+### Experiment 4: SMC Steering Baseline on GSM8K
+
+**Status:** COMPLETED WITH CRITICAL BUG - NEEDS RE-RUN
+
+**Configuration:**
+- Generator: `Qwen/Qwen2.5-7B`
+- Reward Model: `Qwen/Qwen2.5-Math-PRM-7B`
+- Dataset: GSM8K Platinum test (1,209 problems)
+- N particles: 16
+- Max SMC iterations: 20
+- Max reasoning steps: 15
+- Temperature: 0.7
+
+**Results (All 1,209 problems completed - BUT INVALID):**
+
+| Metric | Value |
+|--------|-------|
+| Reported Accuracy | 0.0% (0/1209) |
+| Extracted Answer | Literally "answer" for all problems |
+| Average ORM Score | 0.987 |
+
+**Critical Bug Analysis (2026-02-01):**
+
+The experiment completed but produced **invalid results** due to the stop string bug in the OLD code:
+
+1. **Root Cause:** Old code used `include_stop_str_in_output=True` which caused improper step handling
+2. **Effect:** Responses truncated at "## Step" markers, never reaching the conclusion
+3. **Evidence:** All 1,209 `extracted_answer` values are literally "answer" (from the system prompt template `$\boxed{answer}$`)
+4. **Sample response endings:** All end with `## Step 2:` (incomplete)
+
+**Why ORM scores are high despite 0% accuracy:**
+- ORM evaluates the partial reasoning, which is well-formatted
+- The model generates correct Step 1, Step 2 reasoning...
+- ...but never completes to produce an actual answer
+
+**Fix Implemented (uncommitted in working directory):**
+Modified `trex/smc/llm_particle_filter.py` to:
+1. Use `include_stop_str_in_output=False`
+2. Check `finish_reason` to detect if model wants to continue or is done
+3. Add `inject_next_step_headers()` method called AFTER scoring
+4. Mark particles as `finished=True` when they hit EOS naturally
+
+**To Re-run with fix:**
+1. Clear the checkpoint: `rm /scratch/l/liaidan/t-rex/results/smc_baseline/checkpoint.json`
+2. Re-submit: `sbatch trex/scripts/tamia/run_smc_baseline.sh`
+
+**Output Location:**
+```
+/scratch/l/liaidan/t-rex/results/smc_baseline/
 ```
 
 ---

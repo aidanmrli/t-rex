@@ -156,29 +156,34 @@ class SMCSteeringBaseline:
     def prepare_prompt(self, problem: str) -> str:
         """
         Prepare a single problem with chat template.
-        
+
         Args:
             problem: Raw problem text
-            
+
         Returns:
-            Formatted prompt ready for generation
+            Formatted prompt ready for generation, ending with "## Step 1:"
         """
         if not self.config.apply_chat_template:
-            return problem
-        
+            return problem + "\n\n## Step 1:"
+
         self._init_generator()
         tokenizer = self.generator.get_tokenizer()
-        
+
         messages = [
             {"role": "system", "content": self.config.system_prompt},
             {"role": "user", "content": problem}
         ]
-        
-        return tokenizer.apply_chat_template(
+
+        prompt = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
         )
+
+        # Add first step header so model continues from here
+        # This prevents the model from outputting "## Step" at the start
+        # which would trigger our stop string before any content
+        return prompt + "\n\n## Step 1:"
     
     def evaluate_single(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """

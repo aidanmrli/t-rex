@@ -368,6 +368,69 @@ class TestRewardModelScoring:
         assert formatted.count("<extra_0>") == 1
         assert formatted.endswith("<extra_0>")
 
+    def test_format_text_for_scoring_chat_template_filters_system_prompt(self):
+        """
+        CRITICAL: Chat-templated text should only score assistant's steps,
+        not example steps in the system prompt.
+        """
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+        rm.prm_config = QWEN_PRM_CONFIG
+
+        # Simulate chat-templated text with system prompt containing example steps
+        chat_text = """<|im_start|>system
+Solve problems step by step:
+
+## Step 1: [Example description]
+[Example content]
+
+## Step 2: [Example description]
+[Example content]
+<|im_end|>
+<|im_start|>user
+What is 2+2?
+<|im_end|>
+<|im_start|>assistant
+## Step 1: Add the numbers
+2 + 2 = 4
+
+## Step 2: Verify
+The answer is 4.
+
+Therefore, the answer is $\\boxed{4}$."""
+
+        formatted = rm.format_text_for_scoring(chat_text)
+
+        # Should include full chat context (system + user + assistant marker)
+        assert "<|im_start|>system" in formatted
+        assert "What is 2+2?" in formatted
+        assert "<|im_start|>assistant" in formatted
+
+        # Should only have 2 separators (for the 2 assistant steps)
+        # NOT 4 separators (which would happen if system prompt steps were included)
+        assert formatted.count("<extra_0>") == 2
+
+        # The assistant's actual steps should be present
+        assert "Add the numbers" in formatted
+        assert "Verify" in formatted
+
+    def test_format_text_for_scoring_non_chat_template_unchanged(self):
+        """Non-chat-templated text should use original logic."""
+        from trex.models.reward_model import RewardModel
+
+        rm = RewardModel("dummy_path", load_model=False)
+        rm.prm_config = QWEN_PRM_CONFIG
+
+        # Text without chat template markers
+        text = "Problem: What is 2+2?\n\n## Step 1: Add\n2+2=4"
+        formatted = rm.format_text_for_scoring(text)
+
+        # Should have the preamble and step
+        assert "Problem: What is 2+2?" in formatted
+        assert "## Step 1: Add" in formatted
+        assert formatted.count("<extra_0>") == 1
+
 
 class TestScoreExtractionLogic:
     """Test the score extraction from logits."""

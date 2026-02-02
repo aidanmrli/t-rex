@@ -102,16 +102,23 @@ class LLMParticleFilter(ParticleFilter):
     def _get_next_step_number(self, text: str) -> int:
         """
         Get the next step number to generate based on existing text.
-        
-        Counts existing "## Step N:" patterns and returns N+1.
-        
+
+        Counts existing "## Step N:" patterns in the assistant's response
+        (after <|im_start|>assistant) and returns N+1.
+
         Args:
-            text: Current particle text
-            
+            text: Current particle text (may include system/user messages)
+
         Returns:
-            Next step number (1 if no steps exist)
+            Next step number (1 if no steps exist in assistant response)
         """
-        matches = self.STEP_HEADER_PATTERN.findall(text)
+        # Only count steps in assistant's response, not system prompt examples
+        if "<|im_start|>assistant" in text:
+            response = text.split("<|im_start|>assistant")[-1]
+        else:
+            response = text
+
+        matches = self.STEP_HEADER_PATTERN.findall(response)
         if not matches:
             return 1
         return max(int(m) for m in matches) + 1
@@ -150,15 +157,21 @@ class LLMParticleFilter(ParticleFilter):
     
     def _count_reasoning_steps(self, text: str) -> int:
         """
-        Count the number of reasoning steps in text.
-        
+        Count the number of reasoning steps in the assistant's response.
+
         Args:
-            text: Text to count steps in
-            
+            text: Text to count steps in (may include system/user messages)
+
         Returns:
-            Number of "## Step N:" patterns found
+            Number of "## Step N:" patterns found in assistant response
         """
-        return len(self.STEP_HEADER_PATTERN.findall(text))
+        # Only count steps in assistant's response, not system prompt examples
+        if "<|im_start|>assistant" in text:
+            response = text.split("<|im_start|>assistant")[-1]
+        else:
+            response = text
+
+        return len(self.STEP_HEADER_PATTERN.findall(response))
     
     def _is_finished(self, particle: Particle) -> bool:
         """
@@ -189,80 +202,120 @@ class LLMParticleFilter(ParticleFilter):
     
     def expand_particles(self) -> bool:
         """
-        Generate next step for all particles until '## Step N:' or EOS.
-        
-        Strategy for correct step numbering:
-        1. Stop generation when "## Step" is encountered
-        2. INCLUDE the stop string in output (include_stop_str_in_output=True)
-        3. Track step count per-particle and inject header if needed
-        
-        This ensures the LLM sees the complete "## Step N:" pattern in context
-        for the next generation, maintaining correct step numbering.
-        
+        Generate next reasoning step for all active particles.
+
+        Uses stop=["## Step"] to detect step boundaries:
+        - If model outputs "## Step", it wants to continue → keep in SMC loop
+        - If model finishes without "## Step" (EOS), it's done → mark finished
+
+        The stop string is EXCLUDED from output. We check finish_reason to know
+        if the model hit the stop string or finished naturally.
+
+        IMPORTANT: This method does NOT inject next step headers. Header injection
+        happens in inject_next_step_headers() AFTER scoring. This ensures the PRM
+        scores actual content, not empty step headers.
+
+        Particles are marked as finished when:
+        - Model produces EOS (natural completion with \\boxed{})
+        - Text contains \\boxed{} (has final answer)
+        - Max character limit reached
+        - Max reasoning steps reached
+
         Returns:
             True if there are particles still generating, False if all finished
         """
         from vllm import SamplingParams
-        
+
         texts = self.get_particle_texts()
-        
-        # Prepare prompts: inject step header if needed for particles mid-generation
+
+        # Prepare prompts for active particles
         prompts = []
         active_indices = []  # Track which particles to generate for
-        
+
         for i, text in enumerate(texts):
             if self.particles[i].metadata.get("finished"):
-                # Don't generate for finished particles, but keep their text
+                # Don't generate for finished particles
                 prompts.append(text)
             else:
                 active_indices.append(i)
-                # Always call _inject_step_header - it's idempotent when a step
-                # header already exists on the last line
-                prompts.append(self._inject_step_header(text))
-        
+                # Use text directly - step headers are injected after scoring
+                prompts.append(text)
+
         if not active_indices:
             # All particles finished
             return False
-        
-        # Generate until next step marker or end
-        # INCLUDE stop string in output so LLM sees complete context
+
+        # Generate until "## Step" (next step) or EOS (finished)
+        # Exclude stop string from output - we use finish_reason to detect it
         sampling_params = SamplingParams(
             n=1,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens_per_step,
-            stop=["## Step"],  # Stop when next step begins
-            include_stop_str_in_output=True,  # Include "## Step" in output
+            stop=["## Step"],
+            include_stop_str_in_output=False,
         )
-        
+
         # Only generate for active particles
         active_prompts = [prompts[i] for i in active_indices]
         outputs = self.generator.generate(active_prompts, sampling_params)
-        
+
         # Map outputs back to particles
         output_idx = 0
         still_generating = False
-        
+
         for i in range(len(self.particles)):
             if self.particles[i].metadata.get("finished"):
                 continue
-            
+
             if output_idx < len(outputs):
-                continuation = outputs[output_idx].outputs[0].text
+                output = outputs[output_idx].outputs[0]
+                continuation = output.text
                 self.particles[i].text = prompts[i] + continuation
+
+                # Check finish_reason to understand why generation stopped
+                if output.finish_reason == "stop":
+                    # Model hit "## Step" stop string - it wants to continue
+                    # Mark that we need to inject header AFTER scoring
+                    self.particles[i].metadata["needs_step_header"] = True
+                    logger.debug(
+                        f"Particle {i} hit step boundary, will inject header after scoring"
+                    )
+                else:
+                    # Model finished naturally (EOS or length limit) - it's done
+                    self.particles[i].metadata["finished"] = True
+                    self.particles[i].metadata["finish_reason"] = output.finish_reason
+                    logger.debug(
+                        f"Particle {i} finished naturally: finish_reason={output.finish_reason}"
+                    )
+
                 output_idx += 1
-            
+
             # Track per-particle reasoning step count
             reasoning_step_count = self._count_reasoning_steps(self.particles[i].text)
             self.particles[i].metadata["reasoning_step_count"] = reasoning_step_count
-            
-            # Check if particle is finished
+
+            # Check if particle is finished (has boxed answer, hit limits, etc.)
             if self._is_finished(self.particles[i]):
                 self.particles[i].metadata["finished"] = True
-            else:
+            elif not self.particles[i].metadata.get("finished"):
                 still_generating = True
-        
+
         self._smc_iteration += 1
         return still_generating and self._smc_iteration < self.config.max_smc_iterations
+
+    def inject_next_step_headers(self) -> None:
+        """
+        Inject next step headers for particles that need them.
+
+        Called AFTER scoring to ensure PRM scores actual content, not empty headers.
+        """
+        for particle in self.particles:
+            if particle.metadata.pop("needs_step_header", False):
+                next_step = self._get_next_step_number(particle.text)
+                particle.text += f"\n\n## Step {next_step}:"
+                logger.debug(
+                    f"Injected Step {next_step} header after scoring"
+                )
     
     def score_particles(self) -> torch.Tensor:
         """
@@ -346,7 +399,7 @@ class LLMParticleFilter(ParticleFilter):
     
     def step(self) -> bool:
         """
-        Single SMC step: expand, score with PRM, resample.
+        Single SMC step: expand, score with PRM, inject headers, resample.
 
         Weight Update Strategy (Standard SMC Steering):
         Uses multiplicative weights: w_t = w_{t-1} × PRM(step_t)
@@ -369,15 +422,22 @@ class LLMParticleFilter(ParticleFilter):
             w_t ∝ ψ_t(s_{1:t}) / ψ_{t-1}(s_{1:t-1})
         Where ψ is the twist/value function estimate.
 
+        Order of operations:
+        1. expand_particles() - generate content (no headers injected yet)
+        2. score_particles() - score actual content
+        3. inject_next_step_headers() - add headers AFTER scoring
+        4. resample() - based on scores
+
         Returns:
             True if there are particles still generating, False if all finished
         """
         import warnings
 
-        # Expand particles (generate next step)
+        # Expand particles (generate next step, but don't inject headers yet)
         should_continue = self.expand_particles()
 
-        # Get PRM scores for the latest step (on same device as weights)
+        # Get PRM scores for the latest step BEFORE injecting next headers
+        # This ensures we score actual content, not empty "## Step N:" headers
         step_scores = self.score_particles()
 
         # Log step scores for debugging
@@ -422,6 +482,12 @@ class LLMParticleFilter(ParticleFilter):
             f"SMC iteration {self._smc_iteration}: ESS={ess:.2f} "
             f"(threshold={self.config.ess_threshold * self.n_particles:.2f})"
         )
+
+        # Inject next step headers AFTER scoring but BEFORE resampling
+        # This ensures:
+        # 1. PRM scored actual content, not empty headers
+        # 2. Duplicated particles (from resampling) get the correct headers
+        self.inject_next_step_headers()
 
         # Resample based on strategy
         resampled = False

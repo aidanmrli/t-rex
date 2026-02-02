@@ -121,9 +121,13 @@ class TestParticleExpansion:
 
         pf.expand_particles()
 
-        # After expansion: prompt + injected "## Step 1:" + continuation
-        assert "## Step 1:" in pf.particles[0].text  # From injection
+        # After expansion, content should be appended
         assert "Calculate" in pf.particles[0].text   # From continuation
+
+        # Step headers are injected AFTER scoring (in inject_next_step_headers)
+        # so we need to call it to see the header
+        pf.inject_next_step_headers()
+        assert "## Step 1:" in pf.particles[0].text  # From injection
 
     def test_expand_marks_finished_on_boxed(self, mock_llm, mock_reward_model, mock_smc_config, mock_output):
         """Particles with \\boxed{} should be marked finished."""
@@ -164,23 +168,26 @@ class TestParticleExpansion:
         """Should track reasoning step count in metadata."""
         from trex.smc.llm_particle_filter import LLMParticleFilter
 
-        # Continuation after "## Step 1:" that generates more steps
-        # After injection: prompt + "## Step 1:" + " First\nContent\n\n## Step"
-        # Then injection completes it to "## Step 2:"
-        # Second expansion would continue from there
+        # Continuation that triggers stop string ("## Step")
         mock_llm.generate.return_value = [
             mock_output.from_text(" First step content\n\n## Step")
             for _ in range(mock_smc_config.n_particles)
         ]
 
         pf = LLMParticleFilter(mock_smc_config, mock_llm, mock_reward_model)
-        pf.initialize("prompt")
+        # Start with a prompt that already has Step 1 header (like real usage)
+        pf.initialize("Question?\n\n## Step 1:")
 
         pf.expand_particles()
 
-        # Should have counted 1 complete step (## Step 1:)
-        # The "## Step" at end is partial and will be completed on next expansion
+        # After expand, text is "Question?\n\n## Step 1: First step content\n\n## Step"
+        # Step 1 header exists, so count should be 1
         assert pf.particles[0].metadata.get("reasoning_step_count", 0) >= 1
+
+        # After inject_next_step_headers, Step 2 header is added
+        pf.inject_next_step_headers()
+        # Now text has both "## Step 1:" and "## Step 2:"
+        assert "## Step 2:" in pf.particles[0].text
 
 
 class TestSMCWeighting:

@@ -354,6 +354,11 @@ class RewardModel:
         tokens. The preamble is prepended to the first step so the PRM has
         problem context when scoring.
 
+        IMPORTANT: For chat-templated text (with <|im_start|>assistant), only
+        steps from the assistant's response are extracted. This prevents system
+        prompt examples (which may contain "## Step N:" patterns) from polluting
+        the scoring.
+
         Format: preamble + step1<sep> + step2<sep> + ...
 
         Args:
@@ -374,6 +379,27 @@ class RewardModel:
             )
             return self.prm_config.step_separator_token
 
+        # For chat-templated text, only extract steps from assistant's response
+        # This prevents system prompt examples from polluting the scoring
+        assistant_marker = "<|im_start|>assistant"
+        if assistant_marker in text:
+            # Split at assistant marker
+            parts = text.split(assistant_marker, 1)
+            chat_preamble = parts[0] + assistant_marker  # Include the marker
+            assistant_response = parts[1] if len(parts) > 1 else ""
+
+            # Extract steps only from assistant's response
+            _, steps = self._split_into_steps_with_preamble(assistant_response)
+
+            if not steps:
+                # No steps in assistant response, return full text with separator
+                return text + self.prm_config.step_separator_token
+
+            # Prepend full chat context (system + user + assistant marker) to first step
+            steps[0] = chat_preamble + steps[0]
+            return self.format_for_prm(steps)
+
+        # Non-chat-templated text: use original logic
         preamble, steps = self._split_into_steps_with_preamble(text)
 
         if not steps:
