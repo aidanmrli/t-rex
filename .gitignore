@@ -152,3 +152,10 @@ core
 
 simpleRL-reason/
 CLAUDE.md
+node_modules/
+package-lock.json
+package.json
+results
+slurm
+trex/results
+wandb
