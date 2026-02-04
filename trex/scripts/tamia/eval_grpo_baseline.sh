@@ -18,7 +18,21 @@
 module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust cuda/12.6
 
 # 2. Load your environment
-source venv/bin/activate
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
+SEARCH_DIR="${REPO_ROOT}"
+while [[ "${SEARCH_DIR}" != "/" && ! -d "${SEARCH_DIR}/.git" ]]; do
+    SEARCH_DIR="$(dirname "${SEARCH_DIR}")"
+done
+if [[ -d "${SEARCH_DIR}/.git" ]]; then
+    REPO_ROOT="${SEARCH_DIR}"
+fi
+if [[ ! -f "${REPO_ROOT}/venv/bin/activate" ]]; then
+    echo "ERROR: Could not find virtualenv at ${REPO_ROOT}/venv/bin/activate"
+    exit 1
+fi
+cd "${REPO_ROOT}"
+source "${REPO_ROOT}/venv/bin/activate"
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # Scratch and weights setup
 SCRATCH_DIR="/scratch/l/liaidan/t-rex"
@@ -129,4 +143,3 @@ python -m trex.baselines.best_of_n_baseline \
     --sweep_size 100 \
     --eval_chunk_size 50 \
     --use_wandb
-
