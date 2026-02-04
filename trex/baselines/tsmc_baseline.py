@@ -175,6 +175,8 @@ class TSMCBaseline:
         if not self.config.apply_chat_template:
             if self.config.resampling_unit == "token":
                 return problem
+            if self.config.step_boundary_mode == "delimiter":
+                return problem
             return problem + "\n\n## Step 1:"
 
         self._init_generator()
@@ -189,6 +191,8 @@ class TSMCBaseline:
             add_generation_prompt=True,
         )
         if self.config.resampling_unit == "token":
+            return prompt
+        if self.config.step_boundary_mode == "delimiter":
             return prompt
         return prompt + "\n\n## Step 1:"
 
@@ -292,6 +296,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resampling_unit", type=str, default=None)
     parser.add_argument("--resample_every_tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--step_boundary_mode", type=str, default=None)
+    parser.add_argument("--step_delimiter", type=str, default=None)
     return parser
 
 
@@ -317,6 +323,8 @@ def load_config(args: argparse.Namespace) -> TSMCConfig:
         "resampling_unit": args.resampling_unit,
         "resample_every_tokens": args.resample_every_tokens,
         "temperature": args.temperature,
+        "step_boundary_mode": args.step_boundary_mode,
+        "step_delimiter": args.step_delimiter,
     }
     for k, v in overrides.items():
         if v is not None:

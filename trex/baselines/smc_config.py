@@ -35,7 +35,12 @@ class SMCSteeringConfig:
     n_particles: int = 16
     max_smc_iterations: int = 20  # Maximum SMC loop iterations (expand → score → resample)
     max_reasoning_steps: int = 15  # Maximum "## Step N:" reasoning steps per particle
-    step_pattern: str = r"## Step \d+:"  # Regex for step detection
+    # Step boundary detection
+    # - "header": Detect steps via "## Step N:" headers (default behavior)
+    # - "delimiter": Detect steps via step_delimiter (e.g., "\n\n")
+    step_boundary_mode: str = "header"
+    step_pattern: str = r"## Step \d+:"  # Regex for step detection in header mode
+    step_delimiter: str = "\n\n"  # Step delimiter in delimiter mode
     seed: Optional[int] = None  # Random seed for reproducibility
     
     # Resampling
@@ -150,6 +155,17 @@ Where [answer] is just the final number or expression that solves the problem.""
                 f"Must be one of {valid_units}"
             )
 
+        # Validate step boundary mode
+        valid_boundary_modes = ("header", "delimiter")
+        if self.step_boundary_mode not in valid_boundary_modes:
+            raise ValueError(
+                f"Invalid step_boundary_mode: {self.step_boundary_mode}. "
+                f"Must be one of {valid_boundary_modes}"
+            )
+        if self.step_boundary_mode == "delimiter":
+            if not isinstance(self.step_delimiter, str) or self.step_delimiter == "":
+                raise ValueError("step_delimiter must be a non-empty string for delimiter mode")
+
         # Validate ESS threshold
         if not 0.0 < self.ess_threshold <= 1.0:
             raise ValueError(
@@ -209,6 +225,9 @@ Where [answer] is just the final number or expression that solves the problem.""
             "prompt_max_tokens": self.prompt_max_tokens,
             "top_p": self.top_p,
             "top_k": self.top_k,
+            "step_boundary_mode": self.step_boundary_mode,
+            "step_pattern": self.step_pattern,
+            "step_delimiter": self.step_delimiter,
             "resampling_unit": self.resampling_unit,
             "resample_every_tokens": self.resample_every_tokens,
             "resampling_method": self.resampling_method,

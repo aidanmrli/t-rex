@@ -96,6 +96,9 @@ class LLMParticleFilter(ParticleFilter):
         self.config = config
         self.generator = generator
         self.reward_model = reward_model
+        self.step_boundary_mode = getattr(config, "step_boundary_mode", "header")
+        self.step_delimiter = getattr(config, "step_delimiter", "\n\n")
+        self._step_pattern = re.compile(getattr(config, "step_pattern", r"## Step \d+:"))
         
         # SMC loop iteration count (expand → score → resample cycles)
         # Note: Different from reasoning_step_count which tracks "## Step N:" in text
@@ -298,6 +301,8 @@ class LLMParticleFilter(ParticleFilter):
         Returns:
             Next step number (1 if no steps exist in assistant response)
         """
+        if self.step_boundary_mode == "delimiter":
+            raise ValueError("Step numbering is not available in delimiter mode.")
         # Only count steps in assistant's response, not system prompt examples
         if "<|im_start|>assistant" in text:
             response = text.split("<|im_start|>assistant")[-1]
@@ -341,7 +346,7 @@ class LLMParticleFilter(ParticleFilter):
         next_step = self._get_next_step_number(text)
         return text + f"\n\n## Step {next_step}:"
     
-    def _count_reasoning_steps(self, text: str) -> int:
+    def _count_reasoning_steps(self, text: str, particle: Optional[Particle] = None) -> int:
         """
         Count the number of reasoning steps in the assistant's response.
 
@@ -351,13 +356,16 @@ class LLMParticleFilter(ParticleFilter):
         Returns:
             Number of "## Step N:" patterns found in assistant response
         """
-        # Only count steps in assistant's response, not system prompt examples
-        if "<|im_start|>assistant" in text:
-            response = text.split("<|im_start|>assistant")[-1]
-        else:
-            response = text
+        response = self._assistant_response(text)
+        if self.step_boundary_mode == "delimiter":
+            if not self.step_delimiter:
+                return 0
+            count = response.count(self.step_delimiter)
+            if particle is not None and particle.metadata.get("needs_step_header"):
+                count += 1
+            return count
 
-        return len(self.STEP_HEADER_PATTERN.findall(response))
+        return len(self._step_pattern.findall(response))
 
     def _assistant_response(self, text: str) -> str:
         """
@@ -398,7 +406,7 @@ class LLMParticleFilter(ParticleFilter):
             return True
         
         # Hit max reasoning steps
-        step_count = self._count_reasoning_steps(text)
+        step_count = self._count_reasoning_steps(text, particle=particle)
         if step_count > self.config.max_reasoning_steps:
             return True
         
@@ -462,8 +470,9 @@ class LLMParticleFilter(ParticleFilter):
         Generate next reasoning step for all active particles.
 
         Uses stop sequences to detect step boundaries:
-        - If model outputs "## Step", it wants to continue → keep in SMC loop
-        - If model finishes without "## Step" (EOS), it's done → mark finished
+        - Header mode: stop on "## Step" to mark a boundary
+        - Delimiter mode: stop on the configured step delimiter
+        - If model finishes without a boundary (EOS), it's done → mark finished
 
         The stop string is EXCLUDED from output. We check finish_reason to know
         if the model hit the stop string or finished naturally.
@@ -494,13 +503,16 @@ class LLMParticleFilter(ParticleFilter):
             pending_indices, max_new_tokens=self.config.max_tokens_per_step
         )
 
-        # Use dynamic stop sequence when all pending particles are on the same next step.
-        next_steps = {self._get_next_step_number(text) for text in pending_prompt_texts}
-        if len(next_steps) == 1:
-            next_step = next_steps.pop()
-            stop_sequences = [f"## Step {next_step}:"]
+        if self.step_boundary_mode == "delimiter":
+            stop_sequences = [self.step_delimiter]
         else:
-            stop_sequences = ["## Step"]
+            # Use dynamic stop sequence when all pending particles are on the same next step.
+            next_steps = {self._get_next_step_number(text) for text in pending_prompt_texts}
+            if len(next_steps) == 1:
+                next_step = next_steps.pop()
+                stop_sequences = [f"## Step {next_step}:"]
+            else:
+                stop_sequences = ["## Step"]
 
         # Generate until next step header or EOS. Exclude stop string from output.
         sampling_params = self._build_sampling_params(
@@ -551,7 +563,9 @@ class LLMParticleFilter(ParticleFilter):
                 )
 
             # Track per-particle reasoning step count
-            reasoning_step_count = self._count_reasoning_steps(self.particles[particle_idx].text)
+            reasoning_step_count = self._count_reasoning_steps(
+                self.particles[particle_idx].text, particle=self.particles[particle_idx]
+            )
             self.particles[particle_idx].metadata["reasoning_step_count"] = reasoning_step_count
 
             # Check if particle is finished (boxed answer, max chars, etc.)
@@ -626,7 +640,7 @@ class LLMParticleFilter(ParticleFilter):
 
     def inject_next_step_headers(self) -> None:
         """
-        Inject next step headers for particles that need them.
+        Inject next step boundaries for particles that need them.
 
         Called AFTER scoring to ensure PRM scores actual content, not empty headers.
         """
@@ -635,17 +649,32 @@ class LLMParticleFilter(ParticleFilter):
                 particle.metadata.pop("needs_step_header", None)
                 continue
 
-            if particle.metadata.pop("needs_step_header", False):
-                next_step = self._get_next_step_number(particle.text)
-                if next_step > self.config.max_reasoning_steps:
+            needs_boundary = particle.metadata.get("needs_step_header", False)
+            if not needs_boundary:
+                continue
+
+            if self.step_boundary_mode == "delimiter":
+                step_count = self._count_reasoning_steps(particle.text, particle=particle)
+                if step_count >= self.config.max_reasoning_steps:
                     particle.metadata["finished"] = True
                     particle.metadata["max_reasoning_steps_reached"] = True
+                    particle.metadata.pop("needs_step_header", None)
                     continue
 
-                particle.text += f"\n\n## Step {next_step}:"
-                logger.debug(
-                    f"Injected Step {next_step} header after scoring"
-                )
+                particle.text += self.step_delimiter
+                particle.metadata.pop("needs_step_header", None)
+                logger.debug("Injected step delimiter after scoring")
+                continue
+
+            particle.metadata.pop("needs_step_header", None)
+            next_step = self._get_next_step_number(particle.text)
+            if next_step > self.config.max_reasoning_steps:
+                particle.metadata["finished"] = True
+                particle.metadata["max_reasoning_steps_reached"] = True
+                continue
+
+            particle.text += f"\n\n## Step {next_step}:"
+            logger.debug(f"Injected Step {next_step} header after scoring")
     
     def score_particles(self) -> torch.Tensor:
         """

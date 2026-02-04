@@ -30,6 +30,8 @@ class ValueTrainingConfig:
     prompt_key: str = "prompt"
     answer_key: str = "answer"
     step_pattern: str = r"## Step \d+:"
+    step_boundary_mode: str = "header"
+    step_delimiter: str = "\n\n"
     temperature: float = 0.8
     max_tokens: int = 2048
     apply_chat_template: bool = True
@@ -57,7 +59,26 @@ class ValueTrainer:
         self.buffer = TrajectoryBuffer()
         self._step_re = re.compile(config.step_pattern)
 
+    def _split_steps_by_delimiter(self, text: str) -> List[str]:
+        delimiter = self.config.step_delimiter
+        if not delimiter:
+            return [text] if text.strip() else []
+        if delimiter not in text:
+            return [text] if text.strip() else []
+
+        parts = text.split(delimiter)
+        steps: List[str] = []
+        for idx, part in enumerate(parts):
+            if idx < len(parts) - 1:
+                steps.append(part + delimiter)
+            elif part.strip():
+                steps.append(part)
+        return steps
+
     def _split_steps(self, text: str) -> List[str]:
+        if self.config.step_boundary_mode == "delimiter":
+            return self._split_steps_by_delimiter(text)
+
         matches = list(self._step_re.finditer(text))
         if not matches:
             return [text] if text.strip() else []

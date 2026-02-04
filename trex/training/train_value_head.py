@@ -36,6 +36,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--no_chat_template", action="store_true", help="Disable chat template formatting.")
+    parser.add_argument(
+        "--step_boundary_mode",
+        type=str,
+        default="header",
+        choices=["header", "delimiter"],
+        help="Step boundary mode for splitting rollouts.",
+    )
+    parser.add_argument(
+        "--step_delimiter",
+        type=str,
+        default="\n\n",
+        help="Step delimiter when step_boundary_mode=delimiter.",
+    )
     return parser
 
 
@@ -69,6 +82,8 @@ def main() -> None:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         apply_chat_template=not args.no_chat_template,
+        step_boundary_mode=args.step_boundary_mode,
+        step_delimiter=args.step_delimiter,
     )
 
     trainer = ValueTrainer(twist_model, config)
