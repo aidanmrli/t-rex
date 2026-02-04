@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=smc_baseline
+#SBATCH --job-name=smc_token_sweep
 #SBATCH --account=aip-apsarath
-#SBATCH --output=/scratch/l/liaidan/t-rex/slurm/smc_%j.out
-#SBATCH --error=/scratch/l/liaidan/t-rex/slurm/smc_%j.err
+#SBATCH --output=/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_%A_%a.out
+#SBATCH --error=/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_%A_%a.err
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:h100:4
 #SBATCH --mem=480G
@@ -11,10 +11,15 @@
 #SBATCH --signal=SIGUSR1@120
 
 # =============================================================================
-# SMC Steering Baseline - H100 Configuration (4 GPUs)
+# SMC Token-Resampling Sweep (Array) - H100 Configuration (4 GPUs)
 # =============================================================================
 
 set -e
+
+if [[ -z "${SLURM_ARRAY_TASK_ID}" ]]; then
+    echo "SLURM_ARRAY_TASK_ID not set. Submit with sbatch --array=0-N."
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -48,31 +53,49 @@ REWARD_MODEL_PATH="${SCRATCH_WEIGHTS}/Qwen2.5-Math-PRM-7B"
 # Dataset
 DATASET_PATH="${REPO_ROOT}/trex/data/gsm8k_platinum_test.jsonl"
 
-# SMC parameters
-MAX_SMC_ITERATIONS=20
-MAX_REASONING_STEPS=15
+# Sweep parameters
+K_VALUES_DEFAULT="32 64 128 256 512"
+K_VALUES="${K_VALUES:-$K_VALUES_DEFAULT}"
+TOTAL_TOKEN_BUDGET="${TOTAL_TOKEN_BUDGET:-2048}"
+RESAMPLING_STRATEGY="${RESAMPLING_STRATEGY:-every_step}"
+
+# Shared SMC parameters
 ESS_THRESHOLD=0.5
 TEMPERATURE=0.7
 SEED=42
 
 # Output
-OUTPUT_DIR="/scratch/l/liaidan/t-rex/results/smc_baseline"
+OUTPUT_DIR_BASE="/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_${SLURM_JOB_ID}"
+
+K=$(echo "${K_VALUES}" | awk -v idx="${SLURM_ARRAY_TASK_ID}" '{print $(idx+1)}')
+if [[ -z "${K}" ]]; then
+    echo "Invalid SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID} for K_VALUES='${K_VALUES}'"
+    exit 1
+fi
+
+MAX_SMC_ITERATIONS=$(( (TOTAL_TOKEN_BUDGET + K - 1) / K ))
+if [[ -n "${MAX_SMC_ITERATIONS_OVERRIDE}" ]]; then
+    MAX_SMC_ITERATIONS="${MAX_SMC_ITERATIONS_OVERRIDE}"
+fi
+
+OUTPUT_DIR="${OUTPUT_DIR_BASE}/k${K}"
+mkdir -p "${OUTPUT_DIR}/generations"
 
 echo "=============================================="
-echo "SMC Steering Baseline (H100 - 4 GPUs)"
+echo "SMC Token-Resampling Sweep (Array, H100 - 4 GPUs)"
 echo "=============================================="
 echo "Job ID: ${SLURM_JOB_ID}"
+echo "Array Task: ${SLURM_ARRAY_TASK_ID}"
 echo "Node: ${SLURM_NODELIST}"
 echo "Generator TP: ${GENERATOR_TP_SIZE}, Reward TP: ${REWARD_MODEL_TP_SIZE}"
 echo "N Particles: ${N_PARTICLES}"
 echo "GPU Memory Util: ${GPU_MEMORY_UTILIZATION}"
+echo "K: ${K}"
+echo "Total Token Budget: ${TOTAL_TOKEN_BUDGET}"
+echo "Max SMC Iterations: ${MAX_SMC_ITERATIONS}"
+echo "Resampling Strategy: ${RESAMPLING_STRATEGY}"
+echo "Output: ${OUTPUT_DIR}"
 echo "=============================================="
-
-if [[ -f "${OUTPUT_DIR}/checkpoint.json" ]]; then
-    echo "Found existing checkpoint - will resume"
-fi
-
-mkdir -p "${OUTPUT_DIR}/generations"
 
 python -m trex.baselines.smc_steering_baseline \
     --generator_model_path "${GENERATOR_MODEL_PATH}" \
@@ -80,7 +103,6 @@ python -m trex.baselines.smc_steering_baseline \
     --dataset_path "${DATASET_PATH}" \
     --n_particles ${N_PARTICLES} \
     --max_smc_iterations ${MAX_SMC_ITERATIONS} \
-    --max_reasoning_steps ${MAX_REASONING_STEPS} \
     --ess_threshold ${ESS_THRESHOLD} \
     --temperature ${TEMPERATURE} \
     --seed ${SEED} \
@@ -88,13 +110,19 @@ python -m trex.baselines.smc_steering_baseline \
     --reward_model_tp_size ${REWARD_MODEL_TP_SIZE} \
     --gpu_memory_utilization ${GPU_MEMORY_UTILIZATION} \
     --output_dir "${OUTPUT_DIR}" \
+    --resampling_unit token \
+    --resample_every_tokens ${K} \
+    --resampling_strategy "${RESAMPLING_STRATEGY}" \
+    --use_token_prompts \
     --enable_checkpointing \
     --checkpoint_interval 5 \
     --checkpoint_time_interval 600 \
+    --log_level INFO \
+    --log_file "${OUTPUT_DIR}/run.log" \
     "$@"
 
 echo "=============================================="
-echo "SMC Baseline completed!"
+echo "SMC Token Sweep task completed!"
 echo "Results: ${OUTPUT_DIR}"
 echo "=============================================="
 nvidia-smi

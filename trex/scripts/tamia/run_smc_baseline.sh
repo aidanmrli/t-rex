@@ -14,12 +14,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Check if user specified a GPU type
 if [[ "$1" == "h100" ]]; then
+    shift
     echo "Forcing H100 submission..."
-    sbatch "${SCRIPT_DIR}/run_smc_baseline_h100.sh"
+    sbatch "${SCRIPT_DIR}/run_smc_baseline_h100.sh" "$@"
     exit $?
 elif [[ "$1" == "h200" ]]; then
+    shift
     echo "Forcing H200 submission..."
-    sbatch "${SCRIPT_DIR}/run_smc_baseline_h200.sh"
+    sbatch "${SCRIPT_DIR}/run_smc_baseline_h200.sh" "$@"
     exit $?
 fi
 
@@ -38,12 +40,12 @@ echo "H200: ${H200_IDLE} idle nodes"
 # Decision logic: prefer H200 when available (more GPUs), fall back to H100
 if [[ $H200_IDLE -gt 0 ]]; then
     echo "Submitting to H200 (idle nodes available)..."
-    sbatch "${SCRIPT_DIR}/run_smc_baseline_h200.sh"
+    sbatch "${SCRIPT_DIR}/run_smc_baseline_h200.sh" "$@"
 elif [[ $H100_IDLE -gt 0 ]]; then
     echo "Submitting to H100 (idle nodes available)..."
-    sbatch "${SCRIPT_DIR}/run_smc_baseline_h100.sh"
+    sbatch "${SCRIPT_DIR}/run_smc_baseline_h100.sh" "$@"
 else
     # No idle nodes - default to H100 (more nodes available)
     echo "No idle nodes - submitting to H100 (larger pool)..."
-    sbatch "${SCRIPT_DIR}/run_smc_baseline_h100.sh"
+    sbatch "${SCRIPT_DIR}/run_smc_baseline_h100.sh" "$@"
 fi

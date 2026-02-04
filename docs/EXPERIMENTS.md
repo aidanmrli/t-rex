@@ -1,8 +1,70 @@
 # Experiments for T-REX
 
-**Last Updated:** 2026-02-02
+**Last Updated:** 2026-02-04
 
 **NOTE:** We should always update this document once we have planned an experiment and it works. Then, when the experiment has completed, we should immediately update this document with the results. Status entries are date-stamped; refresh them after each re-run.
+
+---
+
+## State (2026-02-04)
+
+**Solved so far:**
+- Established BoN, GRPO-eval, and PPO-eval baselines with reproducible outputs.
+- Confirmed large search headroom: BoN MATH-500 `pass@1=53.3%` to `pass@32=81.6%`.
+- Found viable token-resampling regime: K=256 reaches `87.68%` on GSM8K Platinum.
+
+**Outstanding problems / hypotheses:**
+- Step-based SMC baseline is still invalid due to truncation/template-answer leakage.
+- Hypothesis to test: finish-reason-aware step handling now allows full completions and valid `\boxed{...}` extraction.
+- Hypothesis to test: high-K (>=256) or adaptive resampling preserves completion without leakage under stricter extraction.
+
+**What to do now:**
+- Re-run step-based SMC from a cleared checkpoint and verify leakage is fixed.
+- Re-run token-resampling confirmation at K>=256 (and optionally adaptive ESS) with the same evaluation protocol.
+- Compare valid SMC numbers directly against BoN/GRPO/PPO.
+
+**Future work:**
+- Move from baseline SMC to TSMC/T-REX comparisons once step-based SMC is valid.
+- Add compute-efficiency comparisons (accuracy vs sample/token budget) across BoN, RL baselines, and SMC variants.
+
+---
+
+## Results Folder Audit (2026-02-04)
+
+**Command run:**
+```bash
+find results -name 'summary.json' -o -name 'sweep_results.json' | sort
+```
+
+**Anything went wrong:**
+- No I/O or parse errors while reading result artifacts.
+- The experiment issue is unchanged: step-based SMC outputs are still truncated and leak the template answer.
+
+### Results / Metrics
+
+| Artifact | Timestamp | Key Results |
+|----------|-----------|-------------|
+| `results/bon_baseline/Qwen2.5-7B/math_n32/summary.json` | 2026-01-27 22:43:12 | best_temp=0.8, pass@1=53.3%, pass@32=81.6% |
+| `results/eval_grpo/Qwen2.5-7B/gsm8k_trained_n8/summary.json` | 2026-01-28 17:32:36 | best_temp=1.0, pass@1=38.6%, pass@16=98.3% |
+| `results/eval_ppo/Qwen2.5-7B/gsm8k_trained_n1/summary.json` | 2026-01-28 17:34:51 | best_temp=1.0, pass@1=25.2%, pass@16=96.6% |
+| `results/smc_baseline/summary.json` | 2026-02-02 19:55:17 | accuracy=0.08% (1/1209), avg ORM=0.9970, avg time=0.592s |
+
+**Token-resampling sweep (`results/smc_token_sweep/job_152924`)**
+
+| K | Accuracy | Correct | Avg Time/Problem | `extracted_answer == "answer"` | Missing `extracted_answer` |
+|---|----------|---------|------------------|---------------------------------|----------------------------|
+| 16 | 0.08% | 1/1209 | 0.209s | 1208/1209 | 0 |
+| 32 | 0.08% | 1/1209 | 0.276s | 1208/1209 | 0 |
+| 64 | 0.17% | 2/1209 | 0.420s | 1207/1209 | 0 |
+| 128 | 17.54% | 212/1209 | 0.711s | 995/1209 | 1 |
+| 256 | 87.68% | 1060/1209 | 1.222s | 102/1209 | 23 |
+
+### Interpretation (Experiment Context)
+
+- No new experiment outputs were added after 2026-02-02; current conclusions still hold.
+- BoN, GRPO-eval, and PPO-eval baselines are complete and internally consistent with prior reported numbers.
+- Step-based SMC baseline remains invalid for comparison due to template-answer leakage and premature truncation.
+- Token-resampling remains promising only at larger chunks (K=256 in current sweep).
 
 ---
 
@@ -234,6 +296,18 @@ The script handles SLURM's 24-hour time limit through:
 | pass@16 | P% | Q% | Upper bound shift |
 | Gap (pass@16 - pass@1) | P-X | Q-Y | Remaining search opportunity |
 
+#### Results (2026-01-28, GSM8K Platinum Test)
+
+**Best temperature:** 1.0 (N=16)
+
+| Metric | Score |
+|--------|-------|
+| pass@1 | 38.6% |
+| pass@2 | 61.1% |
+| pass@4 | 82.7% |
+| pass@8 | 94.7% |
+| pass@16 | 98.3% |
+
 ---
 
 ## Script Optimization and Validation (2026-01-27)
@@ -271,13 +345,14 @@ Added for HPC clusters without internet on compute nodes:
 
 ### Validation Status
 
-**Status Note (last confirmed 2026-02-01):** Update this table after each new run.
+**Status Note (last confirmed 2026-02-04):** Update this table after each new run.
 
 | Script | Submitted | Started | Initialization | Training | Status |
 |--------|-----------|---------|----------------|----------|--------|
 | `run_bon_baseline.sh` | Yes | Yes | Success | **COMPLETE** | pass@32=81.6% on MATH-500 |
-| `run_grpo_baseline.sh` | Yes | Yes | Success | **RUNNING** | ~2 it/s, 84% complete |
-| `eval_grpo_baseline.sh` | N/A | N/A | N/A | N/A | Ready to run after GRPO |
+| `run_grpo_baseline.sh` | Yes | Yes | Success | **COMPLETE** | Model artifacts saved; metrics not present in `results/grpo_baseline/` |
+| `eval_grpo_baseline.sh` | Yes | Yes | Success | **COMPLETE** | best_temp=1.0; pass@16=98.3% on GSM8K Platinum |
+| `eval_ppo_baseline.sh` | Yes | Yes | Success | **COMPLETE** | best_temp=1.0; pass@16=96.6% on GSM8K Platinum |
 
 ### Final Configuration Notes
 
@@ -329,95 +404,192 @@ Output: Best solution with highest ORM score
 
 ---
 
-## Planned Experiments
+### SMC Token-Resampling Sweep (K)
 
-### Experiment 3: GRPO Evaluation on GSM8K
+**Purpose:** Find the best token chunk size K for resampling in token-interval SMC (no step template enforced).
 
-**Status:** READY TO RE-RUN (bug fix landed 2026-02-02)
+**Scripts:**
+- `trex/scripts/tamia/run_smc_token_sweep.sh` (single job, runs all K sequentially)
+- `trex/scripts/tamia/run_smc_token_sweep_array.sh` (array job, one K per task)
 
-**Configuration:**
-- Model: Trained GRPO model from Experiment 1
-- Dataset: GSM8K Platinum test set
-- N samples: 16
-- Temperatures: 0.0 (greedy), 0.6, 1.0
+**Key settings:**
+- `K_VALUES`: space-separated list of K values (default: `32 64 128 256 512`)
+- `TOTAL_TOKEN_BUDGET`: fixed per-particle budget to keep sweeps comparable (default: `2048`)
+- `RESAMPLING_STRATEGY`: `every_step` or `ess_adaptive`
 
-**Error (Job 150744):**
+**Array usage example:**
 ```
-ValueError: n must be 1 when using greedy sampling, got 16.
+K_VALUES="32 64 128 256 512" sbatch trex/scripts/tamia/run_smc_token_sweep_array.sh
 ```
 
-**Root Cause:**
-vLLM does not allow `n > 1` when `temperature=0` (greedy sampling). The evaluation script tries to generate 16 samples at temperature=0, which is invalid.
-
-**Fix Implemented (2026-02-02):**
-`trex/baselines/best_of_n_baseline.py` now forces `effective_n = 1` when `temperature=0`. Re-run the evaluation
-script to regenerate pass@k metrics with the fix in place.
-
-**Output Location:**
+**Recent runs (2026-02-02):**
 ```
-/scratch/l/liaidan/t-rex/results/eval_grpo/Qwen2.5-7B/gsm8k_trained_n8/
+sbatch trex/scripts/tamia/run_smc_token_sweep.sh h100 K_VALUES="64 128" TOTAL_TOKEN_BUDGET=512
+sbatch trex/scripts/tamia/run_smc_token_sweep.sh
 ```
+
+**Results (Job 152924, GSM8K Platinum Test, N=16):**
+
+| K (tokens) | Accuracy | Correct | Avg Time/Problem |
+|------------|----------|---------|------------------|
+| 16 | 0.08% | 1/1209 | 0.209s |
+| 32 | 0.08% | 1/1209 | 0.276s |
+| 64 | 0.17% | 2/1209 | 0.420s |
+| 128 | 17.54% | 212/1209 | 0.711s |
+| 256 | 87.68% | 1060/1209 | 1.222s |
+
+**Template-answer leakage (extracted_answer == "answer"):**
+- K <= 64: 1207-1208/1209
+- K = 128: 995/1209
+- K = 256: 102/1209 (plus 23 missing extracted_answer)
 
 ---
 
-### Experiment 4: SMC Steering Baseline on GSM8K
+## Experiment Log (Reverse Chronological)
 
-**Status:** READY TO RE-RUN (stop-string fix landed 2026-02-02)
+### 2026-02-02: Experiment 4 - SMC Steering Baseline on GSM8K (Step-Based)
+
+**Status:** RE-RUN REQUIRED (latest run is invalid)
 
 **Configuration:**
 - Generator: `Qwen/Qwen2.5-7B`
-- Reward Model: `Qwen/Qwen2.5-Math-PRM-7B`
+- Reward model: `Qwen/Qwen2.5-Math-PRM-7B`
 - Dataset: GSM8K Platinum test (1,209 problems)
 - N particles: 16
 - Max SMC iterations: 20
 - Max reasoning steps: 15
 - Temperature: 0.7
 
-**Results (All 1,209 problems completed - BUT INVALID):**
+**Latest run metrics (invalid):**
 
 | Metric | Value |
 |--------|-------|
-| Reported Accuracy | 0.0% (0/1209) |
-| Extracted Answer | Literally "answer" for all problems |
-| Average ORM Score | 0.987 |
+| Reported Accuracy | 0.08% (1/1209) |
+| Extracted Answer | "answer" for 1,208/1,209 problems |
+| Average ORM Score | 0.9970 |
+| Avg Time/Problem | 0.592s |
 
-**Critical Bug Analysis (2026-02-01):**
+**Bug context:**
+- Root cause observed in outputs: step-based generations still stop before final `\boxed{...}` completion.
+- Existing fix already implemented in `trex/smc/llm_particle_filter.py`:
+1. `include_stop_str_in_output=False`
+2. `finish_reason`-aware continuation/termination
+3. `inject_next_step_headers()` after scoring
+4. EOS-based particle finishing
 
-The experiment completed but produced **invalid results** due to the stop string bug in the OLD code:
+**Next run command path:**
+1. `rm /scratch/l/liaidan/t-rex/results/smc_baseline/checkpoint.json`
+2. `./trex/scripts/tamia/run_smc_baseline.sh h100`
 
-1. **Root Cause:** Old code used `include_stop_str_in_output=True` which caused improper step handling
-2. **Effect:** Responses truncated at "## Step" markers, never reaching the conclusion
-3. **Evidence:** All 1,209 `extracted_answer` values are literally "answer" (from the system prompt template `$\boxed{answer}$`)
-4. **Sample response endings:** All end with `## Step 2:` (incomplete)
-
-**Why ORM scores are high despite 0% accuracy:**
-- ORM evaluates the partial reasoning, which is well-formatted
-- The model generates correct Step 1, Step 2 reasoning...
-- ...but never completes to produce an actual answer
-
-**Fix Implemented (2026-02-02, in repo):**
-Modified `trex/smc/llm_particle_filter.py` to:
-1. Use `include_stop_str_in_output=False`
-2. Check `finish_reason` to detect if model wants to continue or is done
-3. Add `inject_next_step_headers()` method called AFTER scoring
-4. Mark particles as `finished=True` when they hit EOS naturally
-
-**To Re-run with fix:**
-1. Clear the checkpoint: `rm /scratch/l/liaidan/t-rex/results/smc_baseline/checkpoint.json`
-2. Re-submit: `sbatch trex/scripts/tamia/run_smc_baseline.sh`
-
-**Output Location:**
-```
-/scratch/l/liaidan/t-rex/results/smc_baseline/
-```
+**Output location:** `/scratch/l/liaidan/t-rex/results/smc_baseline/`
 
 ---
 
-## Completed Experiments
+### 2026-02-02: SMC Token-Resampling Sweep (Job 152924)
 
-### Experiment 1: GRPO Baseline Training on GSM8K
+**Status:** COMPLETE
 
-**Status:** COMPLETE (Job 150200)
+**Configuration:**
+- Dataset: GSM8K Platinum test
+- N particles: 16
+- Sweep: K in `{16, 32, 64, 128, 256}`
+
+**Results:**
+
+| K (tokens) | Accuracy | Correct | Avg Time/Problem |
+|------------|----------|---------|------------------|
+| 16 | 0.08% | 1/1209 | 0.209s |
+| 32 | 0.08% | 1/1209 | 0.276s |
+| 64 | 0.17% | 2/1209 | 0.420s |
+| 128 | 17.54% | 212/1209 | 0.711s |
+| 256 | 87.68% | 1060/1209 | 1.222s |
+
+**Template-answer leakage (`extracted_answer == "answer"`):**
+- K <= 64: 1207-1208/1209
+- K = 128: 995/1209
+- K = 256: 102/1209 (plus 23 missing `extracted_answer`)
+
+**Output location:** `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_152924/`
+
+---
+
+### 2026-01-28: Experiment 3 - GRPO Evaluation on GSM8K (Platinum Test)
+
+**Status:** COMPLETE
+
+**Configuration:**
+- Model: GRPO-trained `Qwen2.5-7B` (Experiment 1)
+- Dataset: GSM8K Platinum test (1,209 problems)
+- N samples: 16
+- Temperatures: 0.0 (greedy), 0.6, 1.0
+- Best temperature: 1.0
+
+**Results:**
+
+| Metric | Score |
+|--------|-------|
+| pass@1 | 38.6% |
+| pass@2 | 61.1% |
+| pass@4 | 82.7% |
+| pass@8 | 94.7% |
+| pass@16 | 98.3% |
+
+**Output location:** `/scratch/l/liaidan/t-rex/results/eval_grpo/Qwen2.5-7B/gsm8k_trained_n8/`
+
+---
+
+### 2026-01-28: Supplemental Evaluation - PPO Baseline on GSM8K (Platinum Test)
+
+**Status:** COMPLETE
+
+**Configuration:**
+- Model: PPO-trained `Qwen2.5-7B` (n=1)
+- Dataset: GSM8K Platinum test (1,209 problems)
+- N samples: 16
+- Temperatures: 0.0 (greedy), 0.6, 1.0
+- Best temperature: 1.0
+
+**Results:**
+
+| Metric | Score |
+|--------|-------|
+| pass@1 | 25.2% |
+| pass@2 | 43.6% |
+| pass@4 | 67.1% |
+| pass@8 | 87.3% |
+| pass@16 | 96.6% |
+
+**Output location:** `/scratch/l/liaidan/t-rex/results/eval_ppo/Qwen2.5-7B/gsm8k_trained_n1/`
+
+---
+
+### 2026-01-27: Experiment 2 - Best-of-N Baseline on MATH-500
+
+**Status:** COMPLETE
+
+**Configuration:**
+- Model: `Qwen/Qwen2.5-7B`
+- Dataset: MATH-500 (500 problems)
+- N samples: 32
+- Best temperature: 0.8
+
+**Results:**
+
+| Metric | Score |
+|--------|-------|
+| pass@1 | 53.3% |
+| pass@2 | 64.1% |
+| pass@4 | 71.1% |
+| pass@8 | 75.6% |
+| pass@32 | 81.6% |
+
+**Output location:** `/scratch/l/liaidan/t-rex/results/bon_baseline/Qwen2.5-7B/math_n32/`
+
+---
+
+### 2026-01 (Job 150200): Experiment 1 - GRPO Baseline Training on GSM8K
+
+**Status:** COMPLETE
 
 **Configuration:**
 - Model: `Qwen/Qwen2.5-7B`
@@ -428,7 +600,8 @@ Modified `trex/smc/llm_particle_filter.py` to:
 - Epochs: 1
 - Training steps: 59
 
-**Training Metrics (Final):**
+**Training metrics (final):**
+
 | Metric | Value |
 |--------|-------|
 | Reward | 0.938 |
@@ -436,37 +609,22 @@ Modified `trex/smc/llm_particle_filter.py` to:
 | Policy Loss | 0.01458 |
 | Response Length | 297.9 tokens |
 
-**Output Location:**
-```
-/scratch/l/liaidan/t-rex/results/grpo_baseline/Qwen2.5-7B/gsm8k_n8/
-```
+**Output location:** `/scratch/l/liaidan/t-rex/results/grpo_baseline/Qwen2.5-7B/gsm8k_n8/`
 
 ---
 
-### Experiment 2: Best-of-N Baseline on MATH-500
+## Interpretation & Implications (2026-02-04)
 
-**Status:** COMPLETE
+**What the new results say:**
+- **GRPO evaluation:** best_temp=1.0 with pass@1=38.6% and pass@16=98.3% implies a very large remaining search gap (~59.7%). Training improves the model but still leaves substantial headroom for inference-time search.
+- **PPO evaluation:** pass@1=25.2% and pass@16=96.6% trails GRPO across k, suggesting GRPO is the stronger RL baseline to beat for T-REX.
+- **Token-resampling sweep:** a sharp jump from K=128 (17.5%) to K=256 (87.7%) indicates frequent resampling can prevent solutions from finishing. Larger chunk sizes (or adaptive K) are necessary for SMC to be viable.
+- **Step-based SMC baseline:** still invalid due to premature truncation and template-answer leakage, so it cannot yet be compared to BoN or GRPO.
 
-**Configuration:**
-- Model: `Qwen/Qwen2.5-7B`
-- Dataset: MATH-500 (500 problems)
-- N samples: 32
-- Best temperature: 0.8 (selected from sweep)
-- GPU memory utilization: 95%
-
-**Results:**
-| Metric | Score |
-|--------|-------|
-| pass@1 | 53.3% |
-| pass@2 | 64.1% |
-| pass@4 | 71.1% |
-| pass@8 | 75.6% |
-| pass@32 | 81.6% |
-
-**Output Location:**
-```
-/scratch/l/liaidan/t-rex/results/bon_baseline/Qwen2.5-7B/math_n32/
-```
+**Implications for next steps:**
+- Prioritize stabilizing termination/stop handling for step-based SMC; the baseline is currently unusable for comparisons.
+- Focus SMC development on token-resampling with K>=256 (or adaptive K) and validate whether the high K=256 accuracy holds under stricter answer extraction.
+- Use GRPO as the primary RL baseline for comparisons; PPO appears weaker in both pass@1 and pass@16.
 
 ---
 

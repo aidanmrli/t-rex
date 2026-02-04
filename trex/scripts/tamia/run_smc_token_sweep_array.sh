@@ -1,27 +1,36 @@
 #!/bin/bash
 # =============================================================================
-# SMC Token-Resampling Sweep - Smart Launcher
+# SMC Token-Resampling Sweep (Array) - Smart Launcher
 # =============================================================================
-# Checks queue availability and submits to H100 or H200, whichever is faster.
+# Submits an array job so each K runs as its own SLURM job.
 #
 # Usage:
-#   ./trex/scripts/tamia/run_smc_token_sweep.sh          # Auto-select best queue
-#   ./trex/scripts/tamia/run_smc_token_sweep.sh h100     # Force H100
-#   ./trex/scripts/tamia/run_smc_token_sweep.sh h200     # Force H200
+#   K_VALUES="32 64 128 256 512" ./trex/scripts/tamia/run_smc_token_sweep_array.sh
+#   ./trex/scripts/tamia/run_smc_token_sweep_array.sh h100
+#   ./trex/scripts/tamia/run_smc_token_sweep_array.sh h200
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+K_VALUES_DEFAULT="32 64 128 256 512"
+K_VALUES="${K_VALUES:-$K_VALUES_DEFAULT}"
+NUM_K=$(echo "${K_VALUES}" | awk '{print NF}')
+if [[ "${NUM_K}" -lt 1 ]]; then
+    echo "K_VALUES must contain at least one integer; got '${K_VALUES}'"
+    exit 1
+fi
+ARRAY_SPEC="0-$((NUM_K - 1))"
 
 # Check if user specified a GPU type
 if [[ "$1" == "h100" ]]; then
     shift
     echo "Forcing H100 submission..."
-    sbatch "${SCRIPT_DIR}/run_smc_token_sweep_h100.sh" "$@"
+    sbatch --array="${ARRAY_SPEC}" "${SCRIPT_DIR}/run_smc_token_sweep_array_h100.sh" "$@"
     exit $?
 elif [[ "$1" == "h200" ]]; then
     shift
     echo "Forcing H200 submission..."
-    sbatch "${SCRIPT_DIR}/run_smc_token_sweep_h200.sh" "$@"
+    sbatch --array="${ARRAY_SPEC}" "${SCRIPT_DIR}/run_smc_token_sweep_array_h200.sh" "$@"
     exit $?
 fi
 
@@ -40,12 +49,12 @@ echo "H200: ${H200_IDLE} idle nodes"
 # Decision logic: prefer H200 when available (more GPUs), fall back to H100
 if [[ $H200_IDLE -gt 0 ]]; then
     echo "Submitting to H200 (idle nodes available)..."
-    sbatch "${SCRIPT_DIR}/run_smc_token_sweep_h200.sh" "$@"
+    sbatch --array="${ARRAY_SPEC}" "${SCRIPT_DIR}/run_smc_token_sweep_array_h200.sh" "$@"
 elif [[ $H100_IDLE -gt 0 ]]; then
     echo "Submitting to H100 (idle nodes available)..."
-    sbatch "${SCRIPT_DIR}/run_smc_token_sweep_h100.sh" "$@"
+    sbatch --array="${ARRAY_SPEC}" "${SCRIPT_DIR}/run_smc_token_sweep_array_h100.sh" "$@"
 else
     # No idle nodes - default to H100 (more nodes available)
     echo "No idle nodes - submitting to H100 (larger pool)..."
-    sbatch "${SCRIPT_DIR}/run_smc_token_sweep_h100.sh" "$@"
+    sbatch --array="${ARRAY_SPEC}" "${SCRIPT_DIR}/run_smc_token_sweep_array_h100.sh" "$@"
 fi

@@ -16,9 +16,13 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
 # Load modules and environment
 module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust cuda/12.6
-source venv/bin/activate
+source "${REPO_ROOT}/venv/bin/activate"
+cd "${REPO_ROOT}"
 
 # Offline mode for compute nodes
 export SCRATCH_WEIGHTS="/scratch/l/liaidan/model_weights"
@@ -42,7 +46,7 @@ GENERATOR_MODEL_PATH="${SCRATCH_WEIGHTS}/Qwen2.5-7B"
 REWARD_MODEL_PATH="${SCRATCH_WEIGHTS}/Qwen2.5-Math-PRM-7B"
 
 # Dataset
-DATASET_PATH="trex/data/gsm8k_platinum_test.jsonl"
+DATASET_PATH="${REPO_ROOT}/trex/data/gsm8k_platinum_test.jsonl"
 
 # Sweep parameters
 K_VALUES_DEFAULT="16 32 64 128 256"
