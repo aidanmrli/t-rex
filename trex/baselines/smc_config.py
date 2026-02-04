@@ -56,6 +56,8 @@ class SMCSteeringConfig:
     
     # Generation parameters
     temperature: float = 0.7
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
     max_tokens_per_step: int = 512  # Max tokens per generation call
     # Max number of generation chunks allowed to complete a single reasoning step.
     # Acts as a fallback if the model doesn't emit the next "## Step N:" header.
@@ -154,6 +156,11 @@ Where [answer] is just the final number or expression that solves the problem.""
             raise ValueError(
                 f"prompt_max_tokens must be >= 1, got {self.prompt_max_tokens}"
             )
+
+        if self.top_p is not None and not (0.0 < self.top_p <= 1.0):
+            raise ValueError(f"top_p must be in (0, 1], got {self.top_p}")
+        if self.top_k is not None and self.top_k < 1:
+            raise ValueError(f"top_k must be >= 1, got {self.top_k}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
@@ -177,6 +184,8 @@ Where [answer] is just the final number or expression that solves the problem.""
             "use_token_prompts": self.use_token_prompts,
             "enable_prompt_truncation": self.enable_prompt_truncation,
             "prompt_max_tokens": self.prompt_max_tokens,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
             "resampling_unit": self.resampling_unit,
             "resample_every_tokens": self.resample_every_tokens,
             "resampling_method": self.resampling_method,
