@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Load modules and environment
 module load python/3.12.4 scipy-stack arrow/21.0.0 gcc opencv/4.13.0 rust cuda/12.6
-source "${REPO_ROOT}/venv/bin/activate"
+source venv/bin/activate
 cd "${REPO_ROOT}"
 
 # Offline mode for compute nodes
