@@ -468,6 +468,8 @@ class LLMParticleFilter(ParticleFilter):
         sampling_params = SamplingParams(
             n=1,
             temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            top_k=self.config.top_k,
             max_tokens=self.config.max_tokens_per_step,
             stop=stop_sequences,
             include_stop_str_in_output=False,
@@ -546,6 +548,8 @@ class LLMParticleFilter(ParticleFilter):
         sampling_params = SamplingParams(
             n=1,
             temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            top_k=self.config.top_k,
             max_tokens=self.config.resample_every_tokens,
             stop=None,
             include_stop_str_in_output=False,
