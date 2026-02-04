@@ -25,6 +25,12 @@
 - Example marker usage: `pytest trex/tests/ -m "not integration" -v`.
 - Keep tests isolated; add new tests alongside the subsystem in `trex/tests/test_*`.
 
+## Experiment Documentation
+- After running any experiment, update `docs/EXPERIMENTS.md` immediately.
+- Order of content: (1) results/metrics, (2) interpretation in the experiment context.
+- Explicitly record: what command was run, whether anything went wrong (bugs, invalid runs, anomalies), and what the results imply for the project's next steps.
+- Maintain a top-of-file "Current Experiment State (Summary)" section that lists the problems being solved, any solutions found, what is currently being tried, and a clearly labeled outstanding problem.
+
 ## Commit & Pull Request Guidelines
 - Follow observed conventions: short imperative subjects, often Conventional Commits like `feat:`, `fix:`, `docs:`, with optional scopes (`fix(smc): ...`).
 - PRs should include: brief summary, tests run, linked issue (if any), and before/after notes for metric or eval changes. Include SLURM job details when relevant.

@@ -118,6 +118,23 @@ We should have three abstract components:
 
 ## Phase 2: Twisted Sequential Monte Carlo (TSMC)
 
+### 2.0 Plan Review: Issues and Gaps (2026-02-02)
+
+The following issues should be addressed before implementation to avoid instability and rework:
+
+1. **Undefined target for ψ / value head**: The plan does not specify whether the value head predicts a probability, a log-value, or a bounded score. This affects weight computation and numerical stability.
+2. **Sparse training signal**: Only using final binary reward will lead to high-variance targets; no variance reduction or dense shaping is specified.
+3. **Weighting instability**: `values_t / values_{t-1}` is unstable in raw space and prone to exploding or vanishing weights; no log-space or clipping specified.
+4. **Token vs step alignment**: Value head is per-token but the weighting is per-step. Aggregation from tokens to steps is unspecified.
+5. **vLLM hidden-state access**: The plan assumes vLLM compatibility without specifying how to obtain hidden states; fallback is not defined.
+6. **Twist model API**: The interface for `TwistModel` and how it plugs into `LLMParticleFilter` is not defined.
+7. **Evaluation protocol**: No explicit metrics or ablations to validate the value head and twisted weighting.
+8. **Data pipeline details**: Trajectory buffer format, storage limits, and checkpointing are unspecified.
+9. **Online vs offline training**: Rollout cadence and model staleness are not addressed.
+10. **Safety checks**: No guardrails for NaNs, zero/negative ψ, or degenerate weights.
+
+The plan below adds the missing details and acceptance criteria.
+
 ### 2.1 Value Head Architecture
 
 **Goal:** Add a learnable value head to predict expected future reward. This should probably use a Transformer but we can substitute it with different options.
@@ -150,6 +167,15 @@ We should be able to use all of these as the value head in a plug and play fashi
 - `trex/models/__init__.py` (update exports)
 - `trex/models/value_head.py`
 - `trex/models/twist_model.py`
+
+**Additional Design Decisions (New):**
+- **Define ψ and output space:** Value head outputs `v`; define ψ = `softplus(v)` (or `sigmoid(v)` if treating as probability).
+- **Token → step aggregation (configurable):** `last`, `mean`, or `max` token value within a step.
+- **Log-space weights (for stability):** `log_w_t = log ψ_t - log ψ_{t-1}` with clamp.
+
+**Acceptance Criteria (New):**
+- Unit test verifies output shapes and deterministic behavior on fixed inputs.
+- Can run on a small HF model without vLLM (sanity check).
 
 ---
 
@@ -190,6 +216,16 @@ class ValueTrainingConfig:
 - `trex/training/trajectory_buffer.py`
 - `trex/scripts/train_value_head.sh`
 
+**Additional Design Decisions (New):**
+- **Target shaping (optional):** `R_t = α * PRM_t + (1-α) * R_final` to reduce variance.
+- **Loss:** MSE for regression, BCE if ψ is probability.
+- **EMA target:** Optionally maintain EMA of targets to stabilize updates.
+- **Buffer policy:** Fixed size with reservoir sampling or FIFO; spill to disk (JSONL/Parquet).
+
+**Acceptance Criteria (New):**
+- Training loss decreases on a toy dataset.
+- Positive correlation between value predictions and final reward.
+
 ---
 
 ### 2.3 Twisted SMC Inference
@@ -229,6 +265,46 @@ def compute_twisted_weights(values_t, values_t_minus_1):
 - `trex/training/trajectory_buffer.py`
 - `trex/baselines/tsmc_baseline.py`
 - `trex/scripts/run_tsmc_baseline.sh`
+
+**Additional Design Decisions (New):**
+- **Stable weighting:** use log-space weights with clamp: `log_w_t = clamp(log ψ_t - log ψ_{t-1}, -c, c)`
+- **Degeneracy handling:** if all weights are NaN/Inf or zero, fall back to uniform weights and log a warning.
+- **Step aggregation:** value for step t is computed using the aggregation policy from 2.1.
+
+**Acceptance Criteria (New):**
+- TSMC runs end-to-end on a small subset without weight collapse.
+- Log-space weights remain finite and resampling is stable.
+
+---
+
+### 2.4 Evaluation and Ablations (New)
+
+**Goal:** Validate that TSMC improves efficiency or accuracy over SMC-PRM and Best-of-N.
+
+**Metrics:**
+- Accuracy (final answer)
+- Efficiency (accuracy vs. tokens or model calls)
+- Diversity (unique solutions)
+- Weight stability (entropy of resampling weights)
+
+**Ablations:**
+- SMC-PRM vs TSMC (value head)
+- Token aggregation: `last` vs `mean` vs `max`
+- Training target: binary-only vs PRM-shaped
+
+**Acceptance Criteria:**
+- TSMC improves at least one efficiency metric without reducing accuracy on a pilot subset.
+
+---
+
+### 2.5 vLLM Integration Risk Mitigation (New)
+
+**If hidden states are not accessible or too slow:**
+- Train value head offline on HF model and export weights.
+- Use a standalone “value model” that consumes text and outputs ψ (reward-model style).
+
+**Decision Gate:**
+- Try vLLM hidden-state access once; if blocked, switch to standalone value model.
 
 ---
 

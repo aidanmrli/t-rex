@@ -27,6 +27,20 @@
 - Move from baseline SMC to TSMC/T-REX comparisons once step-based SMC is valid.
 - Add compute-efficiency comparisons (accuracy vs sample/token budget) across BoN, RL baselines, and SMC variants.
 
+**Latest cluster submissions (2026-02-04):**
+- Job `153914`: step-based SMC baseline re-run submitted with cleared checkpoint.
+- Job `153915`: token sweep submitted with `K_VALUES="256 384 512"` and `TOTAL_TOKEN_BUDGET=2048`.
+- Job `153916`: token sweep submitted with `K_VALUES="256 384 512"`, `TOTAL_TOKEN_BUDGET=2048`, `RESAMPLING_STRATEGY=ess_adaptive`.
+- Submission hiccup: initial `Permission denied` on `run_smc_token_sweep_array.sh`; fixed by `chmod +x`.
+
+**Outputs to check when jobs finish:**
+- Job `153914` logs: `/scratch/l/liaidan/t-rex/slurm/smc_153914.out` and `/scratch/l/liaidan/t-rex/slurm/smc_153914.err`
+- Job `153914` results: `/scratch/l/liaidan/t-rex/results/smc_baseline/summary.json` and `/scratch/l/liaidan/t-rex/results/smc_baseline/generations/generations.jsonl`
+- Job `153915` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153915_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153915_*.err`
+- Job `153915` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k512/summary.json`
+- Job `153916` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.err`
+- Job `153916` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k512/summary.json`
+
 ---
 
 ## Results Folder Audit (2026-02-04)
