@@ -347,6 +347,7 @@ class SMCSteeringBaseline:
                       f"Running Acc: {running_accuracy:.3f}")
                 
             except Exception as e:
+                logger.exception("Error processing problem %d", i + 1)
                 print(f"  Error processing problem {i + 1}: {e}")
                 results.append({
                     "problem": item[self.config.prompt_key],

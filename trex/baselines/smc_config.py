@@ -112,6 +112,20 @@ Where [answer] is just the final number or expression that solves the problem.""
         if self.wandb_run_name is None:
             self.wandb_run_name = f"smc_steering_n{self.n_particles}"
 
+        # Validate core loop limits
+        if self.n_particles is None or self.n_particles < 1:
+            raise ValueError(f"n_particles must be >= 1, got {self.n_particles}")
+        if self.max_smc_iterations is None or self.max_smc_iterations < 1:
+            raise ValueError(
+                f"max_smc_iterations must be >= 1, got {self.max_smc_iterations}"
+            )
+        if self.max_reasoning_steps is None or self.max_reasoning_steps < 1:
+            raise ValueError(
+                f"max_reasoning_steps must be >= 1, got {self.max_reasoning_steps}"
+            )
+        if self.max_total_chars is None or self.max_total_chars < 1:
+            raise ValueError(f"max_total_chars must be >= 1, got {self.max_total_chars}")
+
         # Validate resampling method
         valid_methods = ("multinomial", "systematic", "stratified")
         if self.resampling_method not in valid_methods:
@@ -155,6 +169,15 @@ Where [answer] is just the final number or expression that solves the problem.""
         if self.prompt_max_tokens is not None and self.prompt_max_tokens < 1:
             raise ValueError(
                 f"prompt_max_tokens must be >= 1, got {self.prompt_max_tokens}"
+            )
+
+        if self.checkpoint_interval < 1:
+            raise ValueError(
+                f"checkpoint_interval must be >= 1, got {self.checkpoint_interval}"
+            )
+        if self.checkpoint_time_interval < 1:
+            raise ValueError(
+                f"checkpoint_time_interval must be >= 1, got {self.checkpoint_time_interval}"
             )
 
         if self.top_p is not None and not (0.0 < self.top_p <= 1.0):

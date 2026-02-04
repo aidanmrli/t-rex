@@ -257,6 +257,28 @@ class LLMParticleFilter(ParticleFilter):
             prompt_texts.append(text)
 
         return prompt_texts, prompt_inputs
+
+    def _build_sampling_params(self, max_tokens: int, stop: Optional[List[str]]):
+        """
+        Build vLLM SamplingParams, omitting optional fields when unset.
+
+        Some vLLM versions do not accept None for numeric options such as top_p/top_k.
+        """
+        from vllm import SamplingParams
+
+        kwargs = {
+            "n": 1,
+            "temperature": self.config.temperature,
+            "max_tokens": max_tokens,
+            "stop": stop,
+            "include_stop_str_in_output": False,
+        }
+        if self.config.top_p is not None:
+            kwargs["top_p"] = self.config.top_p
+        if self.config.top_k is not None:
+            kwargs["top_k"] = self.config.top_k
+
+        return SamplingParams(**kwargs)
     
     @property
     def smc_iteration(self) -> int:
@@ -441,8 +463,6 @@ class LLMParticleFilter(ParticleFilter):
         Returns:
             True if any new text was generated, False otherwise
         """
-        from vllm import SamplingParams
-
         # Only generate for pending particles (active and not waiting for next header)
         pending_indices = self._get_pending_indices()
 
@@ -465,14 +485,9 @@ class LLMParticleFilter(ParticleFilter):
             stop_sequences = ["## Step"]
 
         # Generate until next step header or EOS. Exclude stop string from output.
-        sampling_params = SamplingParams(
-            n=1,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            top_k=self.config.top_k,
+        sampling_params = self._build_sampling_params(
             max_tokens=self.config.max_tokens_per_step,
             stop=stop_sequences,
-            include_stop_str_in_output=False,
         )
         outputs = self.generator.generate(pending_prompt_inputs, sampling_params)
 
@@ -535,8 +550,6 @@ class LLMParticleFilter(ParticleFilter):
         Returns:
             True if any new text was generated, False otherwise.
         """
-        from vllm import SamplingParams
-
         if not active_indices:
             self._last_generation_progressed = False
             return False
@@ -545,14 +558,9 @@ class LLMParticleFilter(ParticleFilter):
             active_indices, max_new_tokens=self.config.resample_every_tokens
         )
 
-        sampling_params = SamplingParams(
-            n=1,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            top_k=self.config.top_k,
+        sampling_params = self._build_sampling_params(
             max_tokens=self.config.resample_every_tokens,
             stop=None,
-            include_stop_str_in_output=False,
         )
 
         outputs = self.generator.generate(prompt_inputs, sampling_params)

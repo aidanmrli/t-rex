@@ -88,6 +88,16 @@ echo "=============================================="
 
 mkdir -p "${OUTPUT_DIR_BASE}"
 
+# Enforce token-resampling mode for this sweep script.
+# Prevent accidental override via extra CLI args forwarded through "$@".
+for arg in "$@"; do
+    if [[ "${arg}" == "--resampling_unit" || "${arg}" == "--resampling_unit="* || "${arg}" == "--resample_every_tokens" || "${arg}" == "--resample_every_tokens="* ]]; then
+        echo "ERROR: ${arg} must not be passed to run_smc_token_sweep_h100.sh."
+        echo "This script enforces token resampling with per-run K values."
+        exit 2
+    fi
+done
+
 for K in ${K_VALUES}; do
     MAX_SMC_ITERATIONS=$(( (TOTAL_TOKEN_BUDGET + K - 1) / K ))
     if [[ -n "${MAX_SMC_ITERATIONS_OVERRIDE}" ]]; then
@@ -119,9 +129,7 @@ for K in ${K_VALUES}; do
         --resample_every_tokens ${K} \
         --resampling_strategy "${RESAMPLING_STRATEGY}" \
         --use_token_prompts \
-        --enable_checkpointing \
-        --checkpoint_interval 5 \
-        --checkpoint_time_interval 600 \
+        --no_checkpointing \
         --log_level INFO \
         --log_file "${OUTPUT_DIR}/run.log" \
         "$@"
