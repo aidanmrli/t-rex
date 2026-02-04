@@ -9,6 +9,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -20,6 +21,17 @@ from trex.baselines.tsmc_config import TSMCConfig, CheckpointManager
 from trex.eval import MathVerifier
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_response(text: str) -> str:
+    """
+    Strip chat template scaffolding and stop tokens from a prompt+response string.
+    """
+    text = re.sub(r"^.*?<\|im_start\|>assistant\n?", "", text, flags=re.DOTALL, count=1)
+    for stop_word in ("</s>", "<|im_end|>", "<END_OF_TURN>"):
+        if stop_word in text:
+            text = text.split(stop_word)[0].strip()
+    return text
 
 
 class TSMCBaseline:
@@ -202,8 +214,9 @@ class TSMCBaseline:
         elapsed_time = time.time() - start_time
 
         final_text = best_particle.text
-        extracted_answer = self.verifier.extract_answer(final_text)
-        is_correct = self.verifier.verify(extracted_answer, ground_truth)
+        response_text = _clean_response(final_text)
+        extracted_answer = self.verifier.extract_answer(response_text)
+        is_correct = self.verifier.verify(response_text, ground_truth)
 
         summary = pf.get_summary()
 
@@ -211,6 +224,7 @@ class TSMCBaseline:
             "problem": problem,
             "ground_truth": ground_truth,
             "final_text": final_text,
+            "final_response": response_text,
             "final_answer": extracted_answer,
             "correct": bool(is_correct),
             "smc_iteration": summary.get("smc_iteration"),

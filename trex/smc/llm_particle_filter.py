@@ -358,6 +358,23 @@ class LLMParticleFilter(ParticleFilter):
             response = text
 
         return len(self.STEP_HEADER_PATTERN.findall(response))
+
+    def _assistant_response(self, text: str) -> str:
+        """
+        Extract the assistant response portion from a chat-formatted prompt+response.
+
+        This avoids matching system/user prompt content (e.g., \\boxed{answer} in
+        system instructions) when checking for completion.
+        """
+        if "<|im_start|>assistant" in text:
+            text = text.split("<|im_start|>assistant", 1)[-1]
+
+        # Trim common stop tokens if present.
+        for stop_word in ("</s>", "<|im_end|>", "<END_OF_TURN>"):
+            if stop_word in text:
+                text = text.split(stop_word)[0]
+
+        return text
     
     def _is_finished(self, particle: Particle) -> bool:
         """
@@ -370,9 +387,10 @@ class LLMParticleFilter(ParticleFilter):
             True if particle should not be expanded further
         """
         text = particle.text
+        response_text = self._assistant_response(text)
         
         # Has final boxed answer
-        if self.BOXED_PATTERN.search(text):
+        if self.BOXED_PATTERN.search(response_text):
             return True
         
         # Hit max characters (not tokens - character counting is faster during generation)
