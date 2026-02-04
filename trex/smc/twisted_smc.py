@@ -42,6 +42,9 @@ class TwistedSMCConfig(SMCConfig):
     # Per HIGH_LEVEL_CONTEXT.md Section 2.4, twist uses sigmoid so default is False
     log_space: bool = False
 
+    # Minimum log value when log_space=True (for numerical stability)
+    log_value_min: float = -1e6
+
 
 def compute_twisted_weights(
     values_t: torch.Tensor,
@@ -146,10 +149,16 @@ class TwistedSMC(ParticleFilter):
             raise ValueError("Value function not set. Call set_value_function() first.")
         
         texts = self.get_particle_texts()
-        return self.value_function(texts)
+        values = self.value_function(texts)
+        if not isinstance(values, torch.Tensor):
+            values = torch.tensor(values, device=self._device)
+        return values.to(self._device).view(-1)
     
     def get_previous_values(self) -> Optional[torch.Tensor]:
         """Get the previous value estimates."""
+        prev_values = self._get_prev_values_from_metadata()
+        if prev_values is not None:
+            return prev_values
         return self._previous_values
     
     def set_current_values(self, values: torch.Tensor) -> None:
@@ -159,12 +168,25 @@ class TwistedSMC(ParticleFilter):
         Args:
             values: Current value estimates
         """
-        self._previous_values = self._current_values
+        values = values.detach().to(self._device)
+        self._previous_values = values.clone().detach()
         self._current_values = values.clone().detach()
-        
-        # Initialize previous values if this is the first set
-        if self._previous_values is None:
-            self._previous_values = values.clone().detach()
+        self._set_prev_values_metadata(values)
+
+    def _get_prev_values_from_metadata(self) -> Optional[torch.Tensor]:
+        if not self.particles:
+            return None
+        prev_values = []
+        for p in self.particles:
+            if "prev_value" not in p.metadata:
+                return None
+            prev_values.append(p.metadata["prev_value"])
+        return torch.tensor(prev_values, device=self._device, dtype=torch.float32)
+
+    def _set_prev_values_metadata(self, values: torch.Tensor) -> None:
+        values_list = values.detach().to("cpu").view(-1).tolist()
+        for p, v in zip(self.particles, values_list):
+            p.metadata["prev_value"] = float(v)
     
     def update_weights_with_twist(
         self,
@@ -188,19 +210,33 @@ class TwistedSMC(ParticleFilter):
         if not self.config.use_twist:
             return
         
-        # Compute twisted weight ratios
+        current_values = current_values.to(self._device).float().view(-1)
+        previous_values = previous_values.to(self._device).float().view(-1)
+
+        if self.config.log_space:
+            # Log-space: log_w_t = log_w_{t-1} + (logψ_t - logψ_{t-1})
+            log_value_min = self.config.log_value_min
+            current_values = torch.clamp(current_values, min=log_value_min, max=0.0)
+            previous_values = torch.clamp(previous_values, min=log_value_min, max=0.0)
+
+            delta = current_values - previous_values
+            current_weights = self.get_weights()
+            log_weights = torch.log(current_weights + self.config.epsilon) + delta
+            log_weights = log_weights - torch.logsumexp(log_weights, dim=0)
+            new_weights = torch.exp(log_weights)
+            self.set_weights(new_weights)
+            return
+
+        # Probability space: weight ratio = V_t / V_{t-1}
         weight_ratios = compute_twisted_weights(
             current_values,
             previous_values,
             epsilon=self.config.epsilon,
-            log_space=self.config.log_space,
+            log_space=False,
         )
-        
-        # Multiply current weights by ratios
+
         current_weights = self.get_weights()
         new_weights = current_weights * weight_ratios
-        
-        # Normalize
         new_weights = normalize_weights(new_weights)
         self.set_weights(new_weights)
     
@@ -222,23 +258,21 @@ class TwistedSMC(ParticleFilter):
             raise ValueError("Value function not set.")
         
         # Get current values
-        current_values = self.compute_values()
-        
-        # Get previous values (or initialize to current for first step)
-        # First step: ratio = current/current = 1, so weights unchanged
-        if self._previous_values is None:
+        current_values = self.compute_values().detach().to(self._device).view(-1)
+
+        # Get previous values per particle (or initialize to current for first step)
+        previous_values = self._get_prev_values_from_metadata()
+        if previous_values is None:
             previous_values = current_values.clone().detach()
-        else:
-            previous_values = self._previous_values
-        
+
         # Update weights with twist
         self.update_weights_with_twist(current_values, previous_values)
-        
+
+        # Set prev values for next step (stored per particle for resampling safety)
+        self._set_prev_values_metadata(current_values)
+        self._previous_values = current_values.clone().detach()
+        self._current_values = current_values.detach()
+
         # Adaptive resampling
         if self.should_resample():
             self.resample()
-        
-        # Update value state for next step:
-        # Current becomes previous for the next iteration
-        self._previous_values = current_values.clone().detach()
-        self._current_values = current_values.detach()

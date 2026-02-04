@@ -355,3 +355,18 @@ def mock_smc_config():
         enable_checkpointing=False,
     )
 
+
+@pytest.fixture
+def mock_tsmc_config():
+    """Mock TSMCConfig for unit tests."""
+    from trex.baselines.tsmc_config import TSMCConfig
+
+    return TSMCConfig(
+        n_particles=4,
+        max_smc_iterations=5,
+        max_reasoning_steps=10,
+        temperature=0.7,
+        seed=42,
+        enable_checkpointing=False,
+        apply_chat_template=False,
+    )

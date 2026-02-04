@@ -25,6 +25,7 @@ from trex.smc.twisted_smc import (
     TwistedSMC,
 )
 from trex.smc.llm_particle_filter import LLMParticleFilter
+from trex.smc.tsmc_particle_filter import TSMCLLMParticleFilter
 
 __all__ = [
     # Resampling
@@ -43,6 +44,6 @@ __all__ = [
     "TwistedSMC",
     # LLM Particle Filter
     "LLMParticleFilter",
+    "TSMCLLMParticleFilter",
 ]
-
 
