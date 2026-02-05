@@ -187,6 +187,12 @@ def main():
         help="Keep only samples where pre_generated_answer matches ground_truth_answer.",
     )
     parser.add_argument(
+        "--prm800k_min_steps",
+        type=int,
+        default=1,
+        help="Minimum number of reasoning steps required to keep a PRM800K sample.",
+    )
+    parser.add_argument(
         "--prm800k_use_pre_generated_steps",
         action="store_true",
         help="Prefer question.pre_generated_steps when available.",
@@ -237,6 +243,7 @@ def main():
             filter_correct=args.prm800k_filter_correct,
             use_pre_generated_steps=args.prm800k_use_pre_generated_steps,
             streaming=args.prm800k_streaming,
+            min_steps=args.prm800k_min_steps,
         )
 
     print(f"\nDone! All datasets processed and saved to {data_dir}/")
@@ -435,6 +442,7 @@ def _format_prm800k_example(
     example: Dict,
     filter_correct: bool,
     use_pre_generated_steps: bool,
+    min_steps: int,
 ) -> Optional[Dict[str, str]]:
     fields = _extract_prm800k_fields(example)
     problem = fields["problem"]
@@ -444,6 +452,7 @@ def _format_prm800k_example(
     steps = fields["pre_generated_steps"] if use_pre_generated_steps else None
 
     output = None
+    normalized_steps: Optional[List[str]] = None
     if isinstance(steps, list) and steps:
         normalized_steps: List[str] = []
         if any(isinstance(s, dict) for s in steps):
@@ -478,6 +487,14 @@ def _format_prm800k_example(
 
     if not output:
         return None
+
+    if min_steps > 1:
+        if normalized_steps is not None:
+            step_count = len(normalized_steps)
+        else:
+            step_count = output.count("\n\n") + 1 if output.strip() else 0
+        if step_count < min_steps:
+            return None
 
     if filter_correct:
         pred = _normalize_answer(fields["pre_generated_answer"])
@@ -583,6 +600,7 @@ def process_prm800k(
     filter_correct: bool,
     use_pre_generated_steps: bool,
     streaming: bool,
+    min_steps: int,
 ) -> None:
     os.makedirs(data_dir, exist_ok=True)
     schema_output = schema_output or os.path.join(data_dir, "prm800k_schema.json")
@@ -623,7 +641,10 @@ def process_prm800k(
                     break
                 count += 1
                 formatted = _format_prm800k_example(
-                    row, filter_correct=filter_correct, use_pre_generated_steps=use_pre_generated_steps
+                    row,
+                    filter_correct=filter_correct,
+                    use_pre_generated_steps=use_pre_generated_steps,
+                    min_steps=min_steps,
                 )
                 if formatted is None:
                     continue
@@ -648,7 +669,10 @@ def process_prm800k(
                         break
                     count += 1
                     formatted = _format_prm800k_example(
-                        row, filter_correct=filter_correct, use_pre_generated_steps=use_pre_generated_steps
+                        row,
+                        filter_correct=filter_correct,
+                        use_pre_generated_steps=use_pre_generated_steps,
+                        min_steps=min_steps,
                     )
                     if formatted is None:
                         continue
