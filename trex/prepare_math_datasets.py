@@ -388,9 +388,14 @@ def _extract_prm800k_fields(example: Dict) -> Dict[str, Optional[object]]:
             elif isinstance(human_completion, str):
                 chosen_text = human_completion
         if not chosen_text and completions:
+            def _completion_key(c):
+                rating = c.get("rating")
+                rating = rating if isinstance(rating, (int, float)) else 0
+                return (rating, bool(c.get("text")))
+
             completions_sorted = sorted(
                 completions,
-                key=lambda c: (c.get("rating", 0), bool(c.get("text"))),
+                key=_completion_key,
                 reverse=True,
             )
             chosen_text = completions_sorted[0].get("text") if completions_sorted else None
