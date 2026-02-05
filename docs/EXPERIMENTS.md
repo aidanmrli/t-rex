@@ -1,12 +1,12 @@
 # Experiments for T-REX
 
-**Last Updated:** 2026-02-04
+**Last Updated:** 2026-02-05
 
 **NOTE:** We should always update this document once we have planned an experiment and it works. Then, when the experiment has completed, we should immediately update this document with the results. Status entries are date-stamped; refresh them after each re-run.
 
 ---
 
-## State (2026-02-04)
+## State (2026-02-05)
 
 **Solved so far:**
 - Established BoN, GRPO-eval, and PPO-eval baselines with reproducible outputs.
@@ -22,16 +22,18 @@
 - Re-run step-based SMC from a cleared checkpoint and verify leakage is fixed.
 - Re-run token-resampling confirmation at K>=256 (and optionally adaptive ESS) with the same evaluation protocol.
 - Compare valid SMC numbers directly against BoN/GRPO/PPO.
+- Monitor PRM800K SFT run for Qwen2.5-7B and record results once finished.
 
 **Future work:**
 - Move from baseline SMC to TSMC/T-REX comparisons once step-based SMC is valid.
 - Add compute-efficiency comparisons (accuracy vs sample/token budget) across BoN, RL baselines, and SMC variants.
 
-**Latest cluster submissions (2026-02-04):**
+**Latest cluster submissions (2026-02-05):**
 - Job `153914`: step-based SMC baseline re-run submitted with cleared checkpoint.
 - Job `153915`: token sweep submitted with `K_VALUES="256 384 512"` and `TOTAL_TOKEN_BUDGET=2048`.
 - Job `153916`: token sweep submitted with `K_VALUES="256 384 512"`, `TOTAL_TOKEN_BUDGET=2048`, `RESAMPLING_STRATEGY=ess_adaptive`.
 - Submission hiccup: initial `Permission denied` on `run_smc_token_sweep_array.sh`; fixed by `chmod +x`.
+- Job `154122`: PRM800K SFT for `Qwen2.5-7B` submitted (`run_sft_prm800k_h200.sh`).
 
 **Outputs to check when jobs finish:**
 - Job `153914` logs: `/scratch/l/liaidan/t-rex/slurm/smc_153914.out` and `/scratch/l/liaidan/t-rex/slurm/smc_153914.err`
@@ -40,6 +42,8 @@
 - Job `153915` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k512/summary.json`
 - Job `153916` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.err`
 - Job `153916` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k512/summary.json`
+- Job `154122` logs: `/scratch/l/liaidan/t-rex/slurm/prm800k_sft_154122.out` and `/scratch/l/liaidan/t-rex/slurm/prm800k_sft_154122.err`
+- Job `154122` results: `/scratch/l/liaidan/t-rex/results/prm800k_sft/job_154122/ckpt`
 
 ---
 
