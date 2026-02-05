@@ -16,21 +16,32 @@ This recipe outlines the three-stage pipeline required to reproduce the results.
 
 Before any formatting or training, **download and explore PRM800K** to lock in the schema and verify that the data includes stepwise reasoning. This prevents silent schema drift and ensures we format steps correctly.
 
-**Command (explore only):**
+**Command (explore only, Hugging Face):**
 ```bash
 python trex/prepare_math_datasets.py \
   --include_prm800k \
   --only_prm800k \
   --prm800k_stage explore \
-  --prm800k_source git \
-  --prm800k_repo_path /path/to/openai/prm800k
+  --prm800k_source hf \
+  --prm800k_dataset tasksource/PRM800K
+```
+
+If you hit Arrow casting errors from `datasets`, retry with streaming:
+```bash
+python trex/prepare_math_datasets.py \
+  --include_prm800k \
+  --only_prm800k \
+  --prm800k_stage explore \
+  --prm800k_source hf \
+  --prm800k_dataset tasksource/PRM800K \
+  --prm800k_streaming
 ```
 
 **Artifacts:**
 - `trex/data/prm800k_schema.json`
 - `trex/data/prm800k_samples.jsonl`
 
-If you want to use the Hugging Face dataset instead, swap `--prm800k_source hf` and optionally set `--prm800k_config phase2`.
+Optional: set `--prm800k_config <config_name>` if the dataset exposes multiple configs.
 
 ---
 
@@ -45,14 +56,14 @@ Format PRM800K so that **every reasoning step ends with `\n\n`**. The delimiter 
 **Preferred field:** `question.pre_generated_steps` (list of step strings).  
 **Fallback:** `question.ground_truth_solution` normalized to `\n\n` between steps/paragraphs.
 
-**Command (format only):**
+**Command (format only, Hugging Face):**
 ```bash
 python trex/prepare_math_datasets.py \
   --include_prm800k \
   --only_prm800k \
   --prm800k_stage format \
-  --prm800k_source git \
-  --prm800k_repo_path /path/to/openai/prm800k \
+  --prm800k_source hf \
+  --prm800k_dataset tasksource/PRM800K \
   --prm800k_use_pre_generated_steps \
   --prm800k_filter_correct \
   --prm800k_output trex/data/prm800k_sft_train.jsonl

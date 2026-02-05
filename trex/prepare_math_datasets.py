@@ -265,11 +265,30 @@ def _iter_prm800k_hf(
     streaming: bool,
     dataset_config: Optional[str] = None,
 ) -> Iterable[Dict]:
-    if dataset_config:
-        dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
-    else:
-        dataset = load_dataset(dataset_name, split=split, streaming=streaming)
-    return dataset
+    try:
+        if dataset_config:
+            dataset = load_dataset(
+                dataset_name, dataset_config, split=split, streaming=streaming
+            )
+        else:
+            dataset = load_dataset(dataset_name, split=split, streaming=streaming)
+        return dataset
+    except Exception as exc:
+        if streaming:
+            raise
+        # Some PRM800K HF versions fail to cast Arrow types during download.
+        # Retry with streaming to avoid dataset materialization.
+        print(
+            f"[PRM800K] load_dataset failed in non-streaming mode ({exc}). "
+            "Retrying with streaming=True."
+        )
+        if dataset_config:
+            dataset = load_dataset(
+                dataset_name, dataset_config, split=split, streaming=True
+            )
+        else:
+            dataset = load_dataset(dataset_name, split=split, streaming=True)
+        return dataset
 
 
 def _iter_prm800k_git(repo_path: str) -> Iterator[Dict]:
@@ -292,8 +311,32 @@ def _normalize_answer(text: Optional[str]) -> Optional[str]:
     value = str(text)
     value = value.replace("\\boxed{", "").replace("}", "")
     value = value.replace("$", "").replace(",", "").replace("\\!", "")
+    value = value.replace("Answer", "").replace("answer", "")
     value = value.strip()
     return value
+
+
+def _extract_answer_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+
+    boxed_match = re.search(r"\\boxed\{([^}]*)\}", text)
+    if boxed_match:
+        return boxed_match.group(1).strip()
+
+    answer_match = re.search(r"#\s*Answer\s*[:\n]+\s*([^\n]+)", text, re.IGNORECASE)
+    if answer_match:
+        return answer_match.group(1).strip()
+
+    answer_match = re.search(r"\bAnswer\b\s*[:\n]+\s*([^\n]+)", text, re.IGNORECASE)
+    if answer_match:
+        return answer_match.group(1).strip()
+
+    # Fallback: last numeric token.
+    numbers = re.findall(r"[-+]?\d*\.?\d+(?:/\d+)?", text)
+    if numbers:
+        return numbers[-1].strip()
+    return None
 
 
 def _strip_step_header(text: str) -> str:
@@ -332,6 +375,44 @@ def _extract_prm800k_fields(example: Dict) -> Dict[str, Optional[object]]:
                 return label[key]
         return None
 
+    def select_step_text(step: Dict) -> Optional[str]:
+        completions = step.get("completions") if isinstance(step.get("completions"), list) else []
+        chosen_idx = step.get("chosen_completion")
+        chosen_text = None
+        if isinstance(chosen_idx, int) and 0 <= chosen_idx < len(completions):
+            chosen_text = completions[chosen_idx].get("text")
+        if not chosen_text:
+            human_completion = step.get("human_completion")
+            if isinstance(human_completion, dict):
+                chosen_text = human_completion.get("text")
+            elif isinstance(human_completion, str):
+                chosen_text = human_completion
+        if not chosen_text and completions:
+            completions_sorted = sorted(
+                completions,
+                key=lambda c: (c.get("rating", 0), bool(c.get("text"))),
+                reverse=True,
+            )
+            chosen_text = completions_sorted[0].get("text") if completions_sorted else None
+        if not chosen_text:
+            if isinstance(step.get("text"), str):
+                chosen_text = step["text"]
+        return chosen_text.strip() if isinstance(chosen_text, str) and chosen_text.strip() else None
+
+    pre_generated_steps = None
+    label_steps = label.get("steps") if isinstance(label, dict) else None
+    if isinstance(label_steps, list) and label_steps:
+        extracted_steps: List[str] = []
+        for step in label_steps:
+            if not isinstance(step, dict):
+                continue
+            chosen_text = select_step_text(step)
+            if chosen_text:
+                extracted_steps.append(chosen_text)
+
+        if extracted_steps:
+            pre_generated_steps = extracted_steps
+
     return {
         "problem": pick("problem", "prompt", "question", "instruction", "input"),
         "ground_truth_solution": pick(
@@ -340,7 +421,7 @@ def _extract_prm800k_fields(example: Dict) -> Dict[str, Optional[object]]:
         "ground_truth_answer": pick(
             "ground_truth_answer", "answer", "reference_answer"
         ),
-        "pre_generated_steps": pick("pre_generated_steps", "steps"),
+        "pre_generated_steps": pre_generated_steps or pick("pre_generated_steps", "steps"),
         "pre_generated_answer": pick("pre_generated_answer"),
     }
 
@@ -359,7 +440,30 @@ def _format_prm800k_example(
 
     output = None
     if isinstance(steps, list) and steps:
-        output = _join_steps_with_delimiter([str(s) for s in steps])
+        normalized_steps: List[str] = []
+        if any(isinstance(s, dict) for s in steps):
+            # Recover chosen completion text if the list still contains step dicts.
+            for step in steps:
+                if isinstance(step, dict):
+                    step_text = None
+                    if isinstance(step.get("completions"), list):
+                        completions = step["completions"]
+                        chosen_idx = step.get("chosen_completion")
+                        if isinstance(chosen_idx, int) and 0 <= chosen_idx < len(completions):
+                            step_text = completions[chosen_idx].get("text")
+                    if not step_text and isinstance(step.get("human_completion"), dict):
+                        step_text = step["human_completion"].get("text")
+                    if not step_text and isinstance(step.get("text"), str):
+                        step_text = step["text"]
+                    if isinstance(step_text, str) and step_text.strip():
+                        normalized_steps.append(step_text.strip())
+                elif isinstance(step, str) and step.strip():
+                    normalized_steps.append(step.strip())
+        else:
+            normalized_steps = [str(s).strip() for s in steps if str(s).strip()]
+
+        if normalized_steps:
+            output = _join_steps_with_delimiter(normalized_steps)
     elif isinstance(steps, str) and steps.strip():
         output = _normalize_solution_to_delimiter(steps)
     else:
@@ -373,6 +477,25 @@ def _format_prm800k_example(
     if filter_correct:
         pred = _normalize_answer(fields["pre_generated_answer"])
         gold = _normalize_answer(fields["ground_truth_answer"])
+        if pred is None:
+            if isinstance(steps, list) and steps:
+                last_step = steps[-1]
+                if isinstance(last_step, dict):
+                    last_text = None
+                    if isinstance(last_step.get("completions"), list):
+                        completions = last_step["completions"]
+                        chosen_idx = last_step.get("chosen_completion")
+                        if isinstance(chosen_idx, int) and 0 <= chosen_idx < len(completions):
+                            last_text = completions[chosen_idx].get("text")
+                    if not last_text and isinstance(last_step.get("human_completion"), dict):
+                        last_text = last_step["human_completion"].get("text")
+                    if not last_text and isinstance(last_step.get("text"), str):
+                        last_text = last_step["text"]
+                    pred = _normalize_answer(_extract_answer_from_text(last_text or ""))
+                else:
+                    pred = _normalize_answer(_extract_answer_from_text(str(last_step)))
+            elif isinstance(output, str) and output:
+                pred = _normalize_answer(_extract_answer_from_text(output))
         if pred is not None and gold is not None and pred != gold:
             return None
 
