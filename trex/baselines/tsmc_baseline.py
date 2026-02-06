@@ -143,13 +143,13 @@ class TSMCBaseline:
                 self.twist_model.value_head.load_state_dict(state)
 
     def _init_reward_model(self) -> None:
-        if not self.config.use_orm_for_final:
+        if self.config.final_selection_mode != "orm":
             return
         if self.reward_model is None:
             from trex.models.reward_model import RewardModel
 
             if self.config.reward_model_path is None:
-                raise ValueError("reward_model_path is required when use_orm_for_final=True")
+                raise ValueError("reward_model_path is required when final_selection_mode='orm'")
 
             print(f"Initializing ORM reward model: {self.config.reward_model_path}")
             self.reward_model = RewardModel(
@@ -210,6 +210,7 @@ class TSMCBaseline:
             generator=self.generator,
             twist_scorer=self.twist_model,
             reward_model=self.reward_model,
+            answer_extractor=self.verifier.extract_answer,
         )
 
         pf.initialize(prompt)
@@ -291,9 +292,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--value_head_type", type=str, default=None)
     parser.add_argument("--twist_space", type=str, default=None)
     parser.add_argument("--twist_mode", type=str, default=None)
+    parser.add_argument("--final_selection_mode", type=str, default=None)
+    parser.add_argument("--warmup_steps", type=int, default=None)
+    parser.add_argument("--warmup_tokens", type=int, default=None)
     parser.add_argument("--n_particles", type=int, default=None)
     parser.add_argument("--max_smc_iterations", type=int, default=None)
     parser.add_argument("--resampling_unit", type=str, default=None)
+    parser.add_argument("--resampling_method", type=str, default=None)
     parser.add_argument("--resample_every_tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--step_boundary_mode", type=str, default=None)
@@ -310,21 +315,25 @@ def load_config(args: argparse.Namespace) -> TSMCConfig:
         cfg = TSMCConfig()
 
     overrides = {
-        "output_dir": args.output_dir,
-        "dataset_path": args.dataset_path,
-        "generator_model_path": args.generator_model_path,
-        "value_model_path": args.value_model_path,
-        "value_head_path": args.value_head_path,
-        "value_head_type": args.value_head_type,
-        "twist_space": args.twist_space,
-        "twist_mode": args.twist_mode,
-        "n_particles": args.n_particles,
-        "max_smc_iterations": args.max_smc_iterations,
-        "resampling_unit": args.resampling_unit,
-        "resample_every_tokens": args.resample_every_tokens,
-        "temperature": args.temperature,
-        "step_boundary_mode": args.step_boundary_mode,
-        "step_delimiter": args.step_delimiter,
+        "output_dir": getattr(args, "output_dir", None),
+        "dataset_path": getattr(args, "dataset_path", None),
+        "generator_model_path": getattr(args, "generator_model_path", None),
+        "value_model_path": getattr(args, "value_model_path", None),
+        "value_head_path": getattr(args, "value_head_path", None),
+        "value_head_type": getattr(args, "value_head_type", None),
+        "twist_space": getattr(args, "twist_space", None),
+        "twist_mode": getattr(args, "twist_mode", None),
+        "final_selection_mode": getattr(args, "final_selection_mode", None),
+        "warmup_steps": getattr(args, "warmup_steps", None),
+        "warmup_tokens": getattr(args, "warmup_tokens", None),
+        "n_particles": getattr(args, "n_particles", None),
+        "max_smc_iterations": getattr(args, "max_smc_iterations", None),
+        "resampling_unit": getattr(args, "resampling_unit", None),
+        "resampling_method": getattr(args, "resampling_method", None),
+        "resample_every_tokens": getattr(args, "resample_every_tokens", None),
+        "temperature": getattr(args, "temperature", None),
+        "step_boundary_mode": getattr(args, "step_boundary_mode", None),
+        "step_delimiter": getattr(args, "step_delimiter", None),
     }
     for k, v in overrides.items():
         if v is not None:

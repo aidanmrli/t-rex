@@ -35,11 +35,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--twist_space", type=str, default="log_prob")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--max_tokens", type=int, default=2048)
-    parser.add_argument("--no_chat_template", action="store_true", help="Disable chat template formatting.")
+    parser.add_argument(
+        "--apply_chat_template",
+        action="store_true",
+        help="Enable chat template formatting (default is disabled for delimiter-learning runs).",
+    )
+    parser.add_argument(
+        "--no_chat_template",
+        action="store_true",
+        help="Disable chat template formatting (default behavior; kept for compatibility).",
+    )
     parser.add_argument(
         "--step_boundary_mode",
         type=str,
-        default="header",
+        default="delimiter",
         choices=["header", "delimiter"],
         help="Step boundary mode for splitting rollouts.",
     )
@@ -54,6 +63,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    if args.apply_chat_template and args.no_chat_template:
+        raise ValueError("Choose at most one of --apply_chat_template and --no_chat_template.")
 
     dataset = load_dataset(args.dataset)
     verifier = MathVerifier()
@@ -81,7 +92,7 @@ def main() -> None:
         max_steps=args.max_steps,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
-        apply_chat_template=not args.no_chat_template,
+        apply_chat_template=args.apply_chat_template,
         step_boundary_mode=args.step_boundary_mode,
         step_delimiter=args.step_delimiter,
     )

@@ -10,9 +10,10 @@ set -euo pipefail
 export HF_HUB_OFFLINE=1
 export WANDB_MODE=offline
 
-BASE_MODEL="Qwen/Qwen2.5-7B"
-DATASET="trex/data/gsm8k_platinum_train.jsonl"
-OUTPUT_DIR="./results/value_head_training"
+# Stage-1 SFT generator checkpoint and PRM800K-formatted dataset by default.
+BASE_MODEL="${BASE_MODEL:-/scratch/l/liaidan/t-rex/results/prm800k_sft/job_154126/ckpt}"
+DATASET="${DATASET:-trex/data/prm800k_sft_train.jsonl}"
+OUTPUT_DIR="${OUTPUT_DIR:-./results/value_head_training_prm800k}"
 
 python -m trex.training.train_value_head \
     --base_model "$BASE_MODEL" \
@@ -23,4 +24,5 @@ python -m trex.training.train_value_head \
     --learning_rate 1e-4 \
     --max_steps 1000 \
     --update_frequency 100 \
+    --no_chat_template \
     --output_dir "$OUTPUT_DIR"

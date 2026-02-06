@@ -24,3 +24,17 @@ def test_trajectory_buffer_add_and_sample():
     buf.add(Trajectory(prompt="Q", steps=["B"], full_text="QB", reward=1.0))
     sample = buf.sample(batch_size=5)
     assert len(sample) == 2
+
+
+def test_trajectory_triplets_include_token_indices():
+    """Trajectory exposes per-step token indices for aligned supervision."""
+    traj = Trajectory(
+        prompt="Q: ",
+        steps=["A\n\n", "B"],
+        full_text="Q: A\n\nB",
+        reward=1.0,
+        step_token_indices=[-1, None],
+    )
+    triples = traj.get_state_reward_index_triples()
+    assert triples[0] == ("Q: A\n\n", 1.0, -1)
+    assert triples[1] == ("Q: A\n\nB", 1.0, None)

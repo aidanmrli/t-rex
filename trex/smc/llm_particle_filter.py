@@ -557,10 +557,15 @@ class LLMParticleFilter(ParticleFilter):
                 self.particles[particle_idx].metadata["response_clipped"] = (
                     response_length >= self.config.max_tokens_per_step
                 )
+                prev_total = int(self.particles[particle_idx].metadata.get("generated_tokens_total", 0))
+                self.particles[particle_idx].metadata["generated_tokens_total"] = prev_total + response_length
             else:
                 self.particles[particle_idx].metadata["response_clipped"] = (
                     output.finish_reason == "length"
                 )
+                approx_tokens = len(continuation.split()) if continuation else 0
+                prev_total = int(self.particles[particle_idx].metadata.get("generated_tokens_total", 0))
+                self.particles[particle_idx].metadata["generated_tokens_total"] = prev_total + approx_tokens
 
             # Track per-particle reasoning step count
             reasoning_step_count = self._count_reasoning_steps(
@@ -626,10 +631,15 @@ class LLMParticleFilter(ParticleFilter):
                 self.particles[particle_idx].metadata["response_clipped"] = (
                     response_length >= self.config.resample_every_tokens
                 )
+                prev_total = int(self.particles[particle_idx].metadata.get("generated_tokens_total", 0))
+                self.particles[particle_idx].metadata["generated_tokens_total"] = prev_total + response_length
             else:
                 self.particles[particle_idx].metadata["response_clipped"] = (
                     output.finish_reason == "length"
                 )
+                approx_tokens = len(continuation.split()) if continuation else 0
+                prev_total = int(self.particles[particle_idx].metadata.get("generated_tokens_total", 0))
+                self.particles[particle_idx].metadata["generated_tokens_total"] = prev_total + approx_tokens
 
             # Check if particle is finished (boxed answer, max chars, etc.)
             if self._is_finished(self.particles[particle_idx]):

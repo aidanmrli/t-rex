@@ -60,7 +60,8 @@ MICRO_BSZ="${MICRO_BSZ:-1}"
 TRAIN_BSZ="${TRAIN_BSZ:-128}"
 ZERO_STAGE="${ZERO_STAGE:-2}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-1}"
-APPLY_CHAT_TEMPLATE="${APPLY_CHAT_TEMPLATE:-1}"
+# Keep template off by default so step delimiters are learned from data formatting.
+APPLY_CHAT_TEMPLATE="${APPLY_CHAT_TEMPLATE:-0}"
 
 echo "=============================================="
 echo "PRM800K SFT (H200 - 8 GPUs)"

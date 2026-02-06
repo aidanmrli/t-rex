@@ -1,6 +1,6 @@
 # System Context & Mathematical Specification for T-REX: Twisted Replica Exchange for Bootstrapping Reasoning
 
-**Last Updated:** 2026-02-02
+**Last Updated:** 2026-02-05
 
 ## 1. Abstract Framework
 
@@ -237,8 +237,17 @@ This method replaces standard LLM generation (or Beam Search) with a Twisted Seq
 
 The Core Idea: Instead of hoping the base model stumbles upon the right answer, we train a Value Function (Twist) that predicts whether a current partial reasoning trace will lead to a correct answer.
 
-**Implementation Status (2026-02-02):** `trex/smc/twisted_smc.py` provides the twist-weight logic and base class; value
-head training and a full TSMC baseline runner are still pending.
+**Implementation Status (2026-02-05):** Twisted SMC is now implemented end-to-end for the Mode-A (base-proposal) path.
+Core components are available in:
+- `trex/smc/twisted_smc.py` (twist weighting core)
+- `trex/models/value_head.py` + `trex/models/twist_model.py` (value/twist model path)
+- `trex/training/value_trainer.py` + `trex/training/train_value_head.py` (self-distillation training loop + CLI)
+- `trex/smc/tsmc_particle_filter.py` + `trex/baselines/tsmc_baseline.py` (TSMC inference runner)
+
+Current reproduction defaults:
+- `step_boundary_mode="delimiter"` with `step_delimiter="\n\n"`
+- `apply_chat_template=False` by default for TSMC/value-head training runs
+- `final_selection_mode="twist_weight"` (ORM remains optional)
 
 The Mechanism: This Value Function is used to bias the resampling step of a Particle Filter. We maintain a population of "thoughts." At every step (e.g., every newline), we kill off thoughts with low value estimates and clone thoughts with high value estimates.
 
@@ -257,7 +266,7 @@ You need three specific modules to implement this:
 - **Role:** A scalar regression head that estimates $V(s) = P(\text{correct} | s)$.
 - **Architecture:** A simple linear layer (Projector) attached to the final hidden state of the Base LLM.
 - **Input:** [Batch, Seq_Len, Hidden_Dim]
-- **Output:** [Batch, Seq_Len, 1] passed through a Sigmoid.
+- **Output:** [Batch, Seq_Len, 1] raw logits from the head; mapped to $\psi$ or $\log\psi$ in the twist wrapper depending on `twist_space`.
 - **Definition:** $\psi(x_{1:t}) \approx \mathbb{E}_{p_\theta}[R | x_{1:t}]$ where $R \in \{0, 1\}$.
 
 **C. The Verifier / Environment**

@@ -174,8 +174,52 @@ class TwistModel(nn.Module):
         indices = TwistModel._last_token_indices(attention_mask)
         return values[torch.arange(batch, device=values.device), indices].squeeze(-1)
 
-    def score_texts(self, texts: List[str]) -> torch.Tensor:
-        """Return ψ or logψ for each text, using the last non-padding token."""
+    @staticmethod
+    def _resolve_token_indices(
+        attention_mask: torch.Tensor, token_indices: Optional[List[Optional[int]]]
+    ) -> torch.Tensor:
+        lengths = attention_mask.sum(dim=1).clamp(min=1)
+        last_indices = lengths - 1
+
+        if token_indices is None:
+            return last_indices
+
+        if len(token_indices) != attention_mask.shape[0]:
+            raise ValueError(
+                "token_indices length must match batch size: "
+                f"{len(token_indices)} != {attention_mask.shape[0]}"
+            )
+
+        resolved = []
+        for i, index in enumerate(token_indices):
+            length_i = int(lengths[i].item())
+            if index is None:
+                idx = length_i - 1
+            else:
+                idx = int(index)
+                if idx < 0:
+                    idx = length_i + idx
+            idx = max(0, min(length_i - 1, idx))
+            resolved.append(idx)
+
+        return torch.tensor(resolved, device=attention_mask.device, dtype=torch.long)
+
+    @staticmethod
+    def _gather_at_indices(
+        values: torch.Tensor,
+        attention_mask: torch.Tensor,
+        token_indices: Optional[List[Optional[int]]],
+    ) -> torch.Tensor:
+        if values.dim() == 2:
+            values = values.unsqueeze(-1)
+        batch = values.shape[0]
+        indices = TwistModel._resolve_token_indices(attention_mask, token_indices)
+        return values[torch.arange(batch, device=values.device), indices].squeeze(-1)
+
+    def score_texts(
+        self, texts: List[str], token_indices: Optional[List[Optional[int]]] = None
+    ) -> torch.Tensor:
+        """Return ψ or logψ for each text at token_indices (default: last token)."""
         encoded = self._encode_texts(texts)
         device = self._get_device()
         input_ids = encoded["input_ids"].to(device)
@@ -190,10 +234,12 @@ class TwistModel(nn.Module):
             return value_scores.view(-1)
         if attention_mask is None:
             return value_scores[:, -1].view(-1)
-        return self._gather_last(value_scores, attention_mask).view(-1)
+        return self._gather_at_indices(value_scores, attention_mask, token_indices).view(-1)
 
-    def score_texts_logits(self, texts: List[str]) -> torch.Tensor:
-        """Return raw logits for each text, using the last non-padding token."""
+    def score_texts_logits(
+        self, texts: List[str], token_indices: Optional[List[Optional[int]]] = None
+    ) -> torch.Tensor:
+        """Return raw logits for each text at token_indices (default: last token)."""
         encoded = self._encode_texts(texts)
         device = self._get_device()
         input_ids = encoded["input_ids"].to(device)
@@ -211,7 +257,7 @@ class TwistModel(nn.Module):
             return value_logits.view(-1)
         if attention_mask is None:
             return value_logits[:, -1].view(-1)
-        return self._gather_last(value_logits, attention_mask).view(-1)
+        return self._gather_at_indices(value_logits, attention_mask, token_indices).view(-1)
 
     def get_values_for_texts(self, texts: List[str]) -> torch.Tensor:
         return self.score_texts(texts)

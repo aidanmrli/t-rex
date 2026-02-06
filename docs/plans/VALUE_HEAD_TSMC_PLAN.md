@@ -1,13 +1,24 @@
 # Implementation Plan: Value Head + Twisted SMC Baseline
 
-**Status:** Planning Phase (Value head + training not implemented; TwistedSMC core + tests exist)  
+**Status:** Active Implementation (Mode A baseline path implemented; experiments in progress)  
 **Created:** 2026-01-31  
-**Last Updated:** 2026-02-02  
+**Last Updated:** 2026-02-05  
 **Goal:** Implement Value Head architecture and training to enable end-to-end Twisted SMC testing
 
 ---
 
 ## 1. Overview
+
+### 1.1 Current Status Update (2026-02-05)
+
+- Implemented: `trex/models/value_head.py` (Linear/MLP/Attention-pooled value heads).
+- Implemented: `trex/models/twist_model.py` (raw-logit head output with explicit `prob` / `log_prob` mapping).
+- Implemented: `trex/smc/tsmc_particle_filter.py` (LLM rollout + twist weighting + metadata-safe resampling).
+- Implemented: `trex/training/value_trainer.py` and `trex/training/train_value_head.py` (self-distillation loop + CLI).
+- Implemented: `trex/baselines/tsmc_baseline.py` + `trex/baselines/tsmc_config.py` (TSMC baseline runner/config).
+- Implemented: baseline scripts for value-head training and TSMC inference.
+- Default baseline behavior now uses `final_selection_mode="twist_weight"` (ORM optional, not default).
+- Reproduction defaults keep chat templating off (`apply_chat_template=False`) and use delimiter boundaries (`\n\n`).
 
 This plan implements the **Value Head** and **Twisted SMC (TSMC) Baseline** components of T-REX. The Value Head is a learnable **potential function** (unnormalized; may be zero) over partial reasoning traces. When integrated with Twisted SMC, it guides particle filtering toward high-value regions without requiring an external PRM.
 
@@ -120,7 +131,7 @@ If Mode B is implemented, compute $\hat{Z}_t$ **after generating** per-prefix ca
 3. **Per-token heads only for baseline.** Attention-pooled head is allowed but **not used** in baseline runs.
 4. **Step-resampling as default.** Use fixed K-token boundaries for SMC iterations; "## Step N:" markers are optional.
 5. **Resampling defaults:** `resampling_strategy="every_step"`, `resampling_method="systematic"` (match SMC baseline for comparability).
-6. **Final selection:** Use ORM if available (`use_orm_for_final=True`), else fall back to best-weight particle.
+6. **Final selection:** Default to twist lineage weight (`final_selection_mode="twist_weight"`); keep ORM and majority vote as optional modes.
 7. **Log-space weight updates:** Use log-sum-exp normalization when `log_space=True`.
 
 ### 2.6 Value Head Architecture Options
@@ -678,26 +689,26 @@ Similar structure to `run_smc_baseline.sh`, but:
 ## 6. Implementation Phases
 
 ### Phase 1: Value Head Core (Week 1)
-- [ ] Implement `trex/models/value_head.py` (Linear, MLP, Attention-pooled)
-- [ ] Implement `trex/models/twist_model.py` (wrapper)
-- [ ] Unit tests for value heads
-- [ ] Integration test: TwistModel forward pass
+- [x] Implement `trex/models/value_head.py` (Linear, MLP, Attention-pooled)
+- [x] Implement `trex/models/twist_model.py` (wrapper)
+- [x] Unit tests for value heads
+- [x] Integration test: TwistModel forward pass
 
 ### Phase 2: TSMC Particle Filter (Week 1-2)
-- [ ] Extend `trex/smc/llm_particle_filter.py` with a twist scorer (**preferred**) or add `trex/smc/tsmc_particle_filter.py` if needed
-- [ ] Integrate with existing `TwistedSMC` class + `value_function` hook
-- [ ] Unit tests for TSMC loop
-- [ ] Smoke test on small dataset
+- [x] Add `trex/smc/tsmc_particle_filter.py` for twist-scorer-based TSMC rollout logic
+- [x] Integrate with existing `TwistedSMC` math path and per-particle metadata tracking
+- [x] Unit tests for TSMC loop and metadata consistency
+- [ ] Smoke test on small dataset (cluster/integration run)
 
 ### Phase 3: Training Infrastructure (Week 2-3)
-- [ ] Implement `trex/training/trajectory_buffer.py`
-- [ ] Implement `trex/training/value_trainer.py`
-- [ ] Create `train_value_head.py` entry point
-- [ ] Unit tests for training loop
+- [x] Implement `trex/training/trajectory_buffer.py`
+- [x] Implement `trex/training/value_trainer.py`
+- [x] Create `train_value_head.py` entry point
+- [ ] Expand unit tests for value-training loop behaviors (currently partial)
 
 ### Phase 4: Baseline Runner (Week 3)
-- [ ] Implement `trex/baselines/tsmc_baseline.py`
-- [ ] Create `run_tsmc_baseline.sh` script
+- [x] Implement `trex/baselines/tsmc_baseline.py`
+- [x] Create `run_tsmc_baseline.sh` script
 - [ ] Integration test: End-to-end evaluation
 - [ ] SLURM testing on small dataset
 
@@ -793,21 +804,20 @@ flowchart TB
 
 ---
 
-## 10. Files to Create
+## 10. Files Implemented / Maintained
 
 ```
-trex/models/value_head.py          # ~150 lines
-trex/models/twist_model.py         # ~200 lines
-trex/training/__init__.py          # ~10 lines
-trex/training/trajectory_buffer.py # ~100 lines
-trex/training/value_trainer.py     # ~250 lines
-trex/smc/tsmc_particle_filter.py   # ~200 lines (optional; prefer extending llm_particle_filter.py)
-trex/baselines/tsmc_baseline.py    # ~300 lines
-trex/baselines/tsmc_config.py      # ~50 lines (or extend smc_config.py)
-trex/scripts/train_value_head.sh   # ~80 lines
-trex/scripts/run_tsmc_baseline.sh  # ~80 lines
-
-Total: ~1420 lines of new code
+trex/models/value_head.py
+trex/models/twist_model.py
+trex/training/__init__.py
+trex/training/trajectory_buffer.py
+trex/training/value_trainer.py
+trex/training/train_value_head.py
+trex/smc/tsmc_particle_filter.py
+trex/baselines/tsmc_baseline.py
+trex/baselines/tsmc_config.py
+trex/scripts/train_value_head.sh
+trex/scripts/run_tsmc_baseline.sh
 ```
 
 ---
@@ -821,4 +831,4 @@ Total: ~1420 lines of new code
 
 ---
 
-**Next Step:** Review this plan and proceed to implementation phase.
+**Next Step:** Run integration experiments with the current defaults (delimiter mode, no chat template, `twist_weight` final selection), then compare TSMC against the validated SMC baselines.

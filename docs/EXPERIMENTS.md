@@ -79,6 +79,42 @@ Common run config from logs:
 
 ---
 
+## PRM800K SFT Checkpoint Selection Eval Plan (2026-02-05)
+
+**Purpose:**
+- Select a single default Stage-1 generator checkpoint for downstream SMC/TSMC experiments.
+- Compare `job_154122` (H200x8 SFT) vs `job_154126` (H100x4 SFT) on the same inference harness and datasets.
+
+**Evaluation matrix (2x2):**
+- `job_154122` on GSM8K Platinum (`trex/data/gsm8k_platinum_test.jsonl`)
+- `job_154122` on MATH-500 (`trex/data/math500_test.jsonl`)
+- `job_154126` on GSM8K Platinum (`trex/data/gsm8k_platinum_test.jsonl`)
+- `job_154126` on MATH-500 (`trex/data/math500_test.jsonl`)
+
+**Protocol (fixed across all runs):**
+- Harness: `python -m trex.baselines.best_of_n_baseline`
+- Temperature sweep: `0.6 0.8 1.0 1.2` with `sweep_size=100`
+- No chat template (`--no_chat_template`) for consistency with delimiter-based SFT training
+- `N=16` for GSM8K and `N=32` for MATH-500
+
+**Script to run:**
+```bash
+sbatch trex/scripts/tamia/run_eval_prm800k_sft_checkpoints.sh
+```
+
+You can also run directly (without submitting a new SLURM job):
+```bash
+bash trex/scripts/tamia/run_eval_prm800k_sft_checkpoints.sh
+```
+
+**Primary output location:**
+- `/scratch/l/liaidan/t-rex/results/eval_prm800k_sft/<run_tag>/job_<checkpoint_id>/<dataset>_n<n_samples>/summary.json`
+
+**Decision rule:**
+- Pick the checkpoint with better pass@k profile across both GSM8K and MATH-500, then use it as the default generator for TSMC experiments.
+
+---
+
 ## Results Folder Audit (2026-02-04)
 
 **Command run:**

@@ -17,7 +17,7 @@ class Trajectory:
     steps: List[str]
     full_text: str
     reward: float
-    step_token_indices: Optional[List[int]] = None
+    step_token_indices: Optional[List[Optional[int]]] = None
 
     def get_state_reward_pairs(self) -> List[Tuple[str, float]]:
         """Return (partial_trace, reward) for each step."""
@@ -27,7 +27,23 @@ class Trajectory:
             pairs.append((partial, float(self.reward)))
         return pairs
 
-    def get_state_token_indices(self) -> List[int]:
+    def get_state_reward_index_triples(self) -> List[Tuple[str, float, Optional[int]]]:
+        """
+        Return (partial_trace, reward, token_index) for each step.
+
+        token_index is relative to each partial trace. A value of -1 means
+        "use the last non-padding token". None means no aligned boundary token.
+        """
+        triples: List[Tuple[str, float, Optional[int]]] = []
+        for i in range(len(self.steps)):
+            partial = self.prompt + "".join(self.steps[: i + 1])
+            token_index: Optional[int] = None
+            if self.step_token_indices is not None and i < len(self.step_token_indices):
+                token_index = self.step_token_indices[i]
+            triples.append((partial, float(self.reward), token_index))
+        return triples
+
+    def get_state_token_indices(self) -> List[Optional[int]]:
         """Return token indices for step boundaries if available."""
         return list(self.step_token_indices or [])
 

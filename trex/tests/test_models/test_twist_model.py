@@ -96,3 +96,22 @@ def test_prob_mapping_in_range():
     values = twist.score_texts(["x y"])
     assert torch.all(values > 0.0)
     assert torch.all(values < 1.0)
+
+
+def test_score_texts_logits_supports_explicit_token_indices():
+    """Explicit token indices select the requested position per sequence."""
+    model = DummyModel(hidden_size=2)
+    tokenizer = DummyTokenizer()
+    twist = TwistModel(
+        model_name_or_path="dummy",
+        value_head_type="linear",
+        twist_space="log_prob",
+        model=model,
+        tokenizer=tokenizer,
+    )
+    twist.value_head.linear.weight.data.fill_(1.0)
+    twist.value_head.linear.bias.data.zero_()
+
+    logits = twist.score_texts_logits(["a b", "a b c"], token_indices=[0, 1])
+    # token ids at requested positions are 1 and 2; hidden_size=2 -> logits = 2*id
+    assert torch.allclose(logits, torch.tensor([2.0, 4.0]))

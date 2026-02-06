@@ -30,22 +30,14 @@ class ValueTrainingConfig:
     prompt_key: str = "prompt"
     answer_key: str = "answer"
     step_pattern: str = r"## Step \d+:"
-    step_boundary_mode: str = "header"
+    step_boundary_mode: str = "delimiter"
     step_delimiter: str = "\n\n"
     temperature: float = 0.8
     max_tokens: int = 2048
-    apply_chat_template: bool = True
+    apply_chat_template: bool = False
     system_prompt: str = (
-        "Solve the following math problem efficiently and clearly:\n"
-        "- For simple problems (2 steps or fewer): Provide a concise solution with minimal explanation.\n"
-        "- For complex problems (3 steps or more): Use this step-by-step format:\n\n"
-        "## Step 1: [Concise description]\n"
-        "[Brief explanation and calculations]\n\n"
-        "## Step 2: [Concise description]\n"
-        "[Brief explanation and calculations]\n\n"
-        "Regardless of the approach, always conclude with:\n\n"
-        "Therefore, the final answer is: $\\boxed{answer}$. I hope it is correct.\n\n"
-        "Where [answer] is just the final number or expression that solves the problem."
+        "Solve the following math problem step by step and conclude with "
+        "Therefore, the final answer is: $\\boxed{answer}$."
     )
 
 
@@ -140,26 +132,35 @@ class ValueTrainer:
                 # Split steps from generated continuation so prompt is not duplicated
                 # when converting trajectories to (state, reward) pairs.
                 steps = self._split_steps(candidate.text)
+                if self.config.step_boundary_mode == "delimiter":
+                    step_token_indices = [
+                        -1 if step.endswith(self.config.step_delimiter) else None for step in steps
+                    ]
+                else:
+                    step_token_indices = [-1 for _ in steps]
                 trajectories.append(
                     Trajectory(
                         prompt=prompt,
                         steps=steps,
                         full_text=text,
                         reward=reward,
+                        step_token_indices=step_token_indices,
                     )
                 )
 
         return trajectories
 
-    def _prepare_batch(self, pairs: List[Tuple[str, float]]) -> Tuple[List[str], torch.Tensor]:
-        if not pairs:
-            return [], torch.tensor([])
+    def _prepare_batch(
+        self, triples: List[Tuple[str, float, Optional[int]]]
+    ) -> Tuple[List[str], torch.Tensor, List[int]]:
+        if not triples:
+            return [], torch.tensor([]), []
 
         if self.config.class_balance_target is None:
-            batch = random.sample(pairs, min(self.config.batch_size, len(pairs)))
+            batch = random.sample(triples, min(self.config.batch_size, len(triples)))
         else:
-            positives = [p for p in pairs if p[1] > 0.5]
-            negatives = [p for p in pairs if p[1] <= 0.5]
+            positives = [p for p in triples if p[1] > 0.5]
+            negatives = [p for p in triples if p[1] <= 0.5]
             target_pos = int(self.config.batch_size * self.config.class_balance_target)
             target_neg = self.config.batch_size - target_pos
 
@@ -168,32 +169,38 @@ class ValueTrainer:
 
             batch = pos_sample + neg_sample
             if len(batch) < self.config.batch_size:
-                remainder = [p for p in pairs if p not in batch]
+                remainder = [p for p in triples if p not in batch]
                 if remainder:
                     batch += random.sample(remainder, min(len(remainder), self.config.batch_size - len(batch)))
-        states, rewards = zip(*batch)
+        states, rewards, indices = zip(*batch)
         targets = torch.tensor(rewards, dtype=torch.float32)
 
         if self.config.label_smoothing > 0.0:
             smoothing = self.config.label_smoothing
             targets = targets * (1.0 - smoothing) + (1.0 - targets) * smoothing
 
-        return list(states), targets
+        token_indices = [-1 if idx is None else int(idx) for idx in indices]
+        return list(states), targets, token_indices
 
     def train_step(self, trajectories: List[Trajectory]) -> float:
         """Single training step. Returns loss."""
-        pairs: List[Tuple[str, float]] = []
+        triples: List[Tuple[str, float, Optional[int]]] = []
         for traj in trajectories:
-            pairs.extend(traj.get_state_reward_pairs())
+            triples.extend(traj.get_state_reward_index_triples())
 
-        if not pairs:
+        if not triples:
             return 0.0
 
-        states, targets = self._prepare_batch(pairs)
+        if self.config.step_boundary_mode == "delimiter":
+            delimiter_triples = [triple for triple in triples if triple[2] is not None]
+            if delimiter_triples:
+                triples = delimiter_triples
+
+        states, targets, token_indices = self._prepare_batch(triples)
         if not states:
             return 0.0
 
-        logits = self.twist_model.score_texts_logits(states)
+        logits = self.twist_model.score_texts_logits(states, token_indices=token_indices)
         logits = logits.view(-1).to(targets.device)
 
         pos_weight = None

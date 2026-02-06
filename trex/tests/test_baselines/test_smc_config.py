@@ -26,7 +26,7 @@ class TestSMCSteeringConfig:
         config = SMCSteeringConfig()
         
         assert config.n_particles == 16
-        assert config.max_steps == 20
+        assert config.max_smc_iterations == 20
         assert config.resampling_method == "systematic"
         assert 0.0 < config.ess_threshold <= 1.0
         assert config.temperature > 0.0
@@ -64,13 +64,13 @@ class TestSMCSteeringConfig:
         """Config should deserialize from dictionary."""
         d = {
             "n_particles": 8,
-            "max_steps": 10,
+            "max_smc_iterations": 10,
             "seed": 42,
         }
         config = SMCSteeringConfig.from_dict(d)
         
         assert config.n_particles == 8
-        assert config.max_steps == 10
+        assert config.max_smc_iterations == 10
         assert config.seed == 42
     
     def test_config_from_dict_ignores_extra_keys(self):

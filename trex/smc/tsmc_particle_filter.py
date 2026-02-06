@@ -6,7 +6,8 @@ with twist value ratios.
 """
 
 import logging
-from typing import List, Optional, Protocol
+from collections import Counter, defaultdict
+from typing import Callable, List, Optional, Protocol
 
 import torch
 
@@ -39,19 +40,37 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
         generator,
         twist_scorer: TwistScorer,
         reward_model=None,
+        answer_extractor: Optional[Callable[[str], str]] = None,
     ):
         super().__init__(config, generator, reward_model)
         self.twist_scorer = twist_scorer
+        self.answer_extractor = answer_extractor
         self.log_space = config.twist_space == "log_prob"
         self.twist_mode = getattr(config, "twist_mode", "value")
         self.epsilon = getattr(config, "epsilon", 1e-8)
         self.log_value_min = getattr(config, "log_value_min", -1e6)
+        self.warmup_steps = max(0, int(getattr(config, "warmup_steps", 0)))
+        self.warmup_tokens = max(0, int(getattr(config, "warmup_tokens", 0)))
 
     def initialize(self, prompt: str) -> None:
-        """Initialize particles and lineage score metadata."""
+        """Initialize particles, lineage scores, and prompt-state twist baselines."""
         super().initialize(prompt)
         for particle in self.particles:
             particle.metadata["twist_log_weight"] = 0.0
+
+        # Seed prev_value at the prompt state so the first twist update is not neutralized.
+        prompt_texts = [particle.text for particle in self.particles]
+        prompt_values = self.twist_scorer.score_texts(prompt_texts)
+        if not isinstance(prompt_values, torch.Tensor):
+            prompt_values = torch.tensor(prompt_values, device=self._device)
+        prompt_values = prompt_values.to(self._device).view(-1)
+        if prompt_values.numel() != len(self.particles):
+            raise ValueError(
+                "twist_scorer returned an unexpected number of prompt values: "
+                f"{prompt_values.numel()} != {len(self.particles)}"
+            )
+        prompt_values = self._apply_twist_mode(prompt_values)
+        self._set_prev_values_metadata(prompt_values)
 
     def _get_prev_values_tensor(self) -> Optional[torch.Tensor]:
         prev_values = []
@@ -167,6 +186,69 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
         best_idx = max(range(len(self.particles)), key=lambda idx: scores[idx])
         return self.particles[best_idx]
 
+    def _is_in_warmup(self, active_indices: List[int]) -> bool:
+        """Return True while the configured warm-up window is active."""
+        if self._smc_iteration < self.warmup_steps:
+            return True
+
+        if self.config.resampling_unit != "token" or self.warmup_tokens <= 0:
+            return False
+        if not active_indices:
+            return False
+
+        min_tokens = min(
+            int(self.particles[idx].metadata.get("generated_tokens_total", 0))
+            for idx in active_indices
+        )
+        return min_tokens < self.warmup_tokens
+
+    def _extract_answer(self, text: str) -> str:
+        response = self._assistant_response(text).strip()
+        if self.answer_extractor is None:
+            return response
+        extracted = self.answer_extractor(response)
+        if extracted is None:
+            return ""
+        return str(extracted).strip()
+
+    def select_by_majority_vote(self):
+        """
+        Select a particle by majority answer vote with a lineage-score tie break.
+        """
+        if not self.particles:
+            raise ValueError("No particles initialized.")
+
+        answer_to_indices = defaultdict(list)
+        for idx, particle in enumerate(self.particles):
+            answer = self._extract_answer(particle.text)
+            if answer:
+                answer_to_indices[answer].append(idx)
+
+        if not answer_to_indices:
+            return self._select_best_particle_without_orm()
+
+        counts = Counter({answer: len(indices) for answer, indices in answer_to_indices.items()})
+        max_count = max(counts.values())
+        tied_answers = [answer for answer, count in counts.items() if count == max_count]
+
+        def answer_best_lineage(answer: str) -> float:
+            return max(
+                float(self.particles[idx].metadata.get("twist_log_weight", float("-inf")))
+                for idx in answer_to_indices[answer]
+            )
+
+        best_answer = max(tied_answers, key=answer_best_lineage)
+        candidate_indices = answer_to_indices[best_answer]
+
+        best_idx = max(
+            candidate_indices,
+            key=lambda idx: (
+                float(self.particles[idx].metadata.get("twist_log_weight", float("-inf"))),
+                float(self.get_weights()[idx]),
+            ),
+        )
+        return self.particles[best_idx]
+
     def score_particles(self) -> torch.Tensor:
         """
         Compute current twist values for particles.
@@ -203,7 +285,10 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
             ess = None
 
         resampled = False
-        if self.config.resampling_strategy == "every_step":
+        in_warmup = self._is_in_warmup(active_indices)
+        if in_warmup:
+            self.set_weights(new_weights)
+        elif self.config.resampling_strategy == "every_step":
             self._resample_active(active_indices, active_weights)
             resampled = True
         elif self.config.resampling_strategy == "ess_adaptive":
@@ -213,6 +298,8 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
                     resampled = True
                 else:
                     self.set_weights(new_weights)
+        else:
+            self.set_weights(new_weights)
 
         if resampled:
             pass
@@ -256,6 +343,11 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
                     self.particles[idx].metadata["forced_step_boundary"] = True
                 break
 
+        # In delimiter mode, inject the boundary token before scoring so the twist
+        # observes the same context used for subsequent generation.
+        if self.config.step_boundary_mode == "delimiter":
+            self.inject_next_step_headers()
+
         current_values = self.score_particles()
         previous_values = self._get_prev_values_tensor()
         if previous_values is None:
@@ -274,7 +366,10 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
             ess = None
 
         resampled = False
-        if self.config.resampling_strategy == "every_step":
+        in_warmup = self._is_in_warmup(active_indices)
+        if in_warmup:
+            self.set_weights(new_weights)
+        elif self.config.resampling_strategy == "every_step":
             self._resample_active(active_indices, active_weights)
             resampled = True
         elif self.config.resampling_strategy == "ess_adaptive":
@@ -284,11 +379,14 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
                     resampled = True
                 else:
                     self.set_weights(new_weights)
+        else:
+            self.set_weights(new_weights)
 
         if resampled:
             pass
 
-        self.inject_next_step_headers()
+        if self.config.step_boundary_mode != "delimiter":
+            self.inject_next_step_headers()
 
         self._smc_iteration += 1
 
@@ -311,6 +409,14 @@ class TSMCLLMParticleFilter(LLMParticleFilter):
         while self.step():
             pass
 
-        if self.config.use_orm_for_final:
+        selection_mode = getattr(self.config, "final_selection_mode", None)
+        if selection_mode is None:
+            selection_mode = "orm" if getattr(self.config, "use_orm_for_final", False) else "twist_weight"
+
+        if selection_mode == "orm":
             return self.select_best_by_orm()
-        return self._select_best_particle_without_orm()
+        if selection_mode == "majority_vote":
+            return self.select_by_majority_vote()
+        if selection_mode == "twist_weight":
+            return self._select_best_particle_without_orm()
+        raise ValueError(f"Unknown final_selection_mode: {selection_mode}")
