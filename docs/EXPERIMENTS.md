@@ -1,48 +1,38 @@
 # Experiments for T-REX
 
-**Last Updated:** 2026-02-05
+**Last Updated:** 2026-02-09
 
 **NOTE:** We should always update this document once we have planned an experiment and it works. Then, when the experiment has completed, we should immediately update this document with the results. Status entries are date-stamped; refresh them after each re-run.
 
 ---
 
-## Current Experiment State (Summary) (2026-02-05)
+## Current Experiment State (Summary) (2026-02-09)
 
 **Solved so far:**
 - Established BoN, GRPO-eval, and PPO-eval baselines with reproducible outputs.
 - Confirmed large search headroom: BoN MATH-500 `pass@1=53.3%` to `pass@32=81.6%`.
 - Found viable token-resampling regime: K=256 reaches `87.68%` on GSM8K Platinum.
+- PRM800K SFT checkpoint selection eval completed: `job_154126` (H100x4) selected as default SFT checkpoint.
 
 **Outstanding problems / hypotheses:**
 - Step-based SMC baseline is still invalid due to truncation/template-answer leakage.
+- SMC re-run jobs (`153914`–`153916`) all FAILED due to broken venv path in scripts (`/var/venv/bin/activate`). Must fix venv path and resubmit.
+- PRM800K SFT shows catastrophic forgetting on MATH-500 (pass@1 dropped from 53.3% base to 25.6% SFT). Hypothesis: PRM800K overrepresents simpler arithmetic reasoning.
 - Hypothesis to test: finish-reason-aware step handling now allows full completions and valid `\boxed{...}` extraction.
-- Hypothesis to test: high-K (>=256) or adaptive resampling preserves completion without leakage under stricter extraction.
 
 **What to do now:**
-- Re-run step-based SMC from a cleared checkpoint and verify leakage is fixed.
-- Re-run token-resampling confirmation at K>=256 (and optionally adaptive ESS) with the same evaluation protocol.
-- Compare valid SMC numbers directly against BoN/GRPO/PPO.
-- Start evaluation runs for the new PRM800K SFT checkpoints (`job_154122`, `job_154126`) on GSM8K/MATH-500.
+- Fix venv activation path in `run_smc_baseline.sh` and `run_smc_token_sweep_array.sh`, then resubmit SMC jobs.
+- Compare valid SMC numbers directly against BoN/GRPO/PPO once SMC jobs succeed.
+- Decide whether to use base Qwen2.5-7B or PRM800K SFT checkpoint as generator for SMC/TSMC experiments (trade-off: SFT is better on GSM8K but much worse on MATH-500).
 
 **Future work:**
 - Move from baseline SMC to TSMC/T-REX comparisons once step-based SMC is valid.
 - Add compute-efficiency comparisons (accuracy vs sample/token budget) across BoN, RL baselines, and SMC variants.
+- Investigate mixed SFT data or shorter SFT training to mitigate MATH-500 regression.
 
-**Latest cluster submissions (2026-02-05):**
-- Job `153914`: step-based SMC baseline re-run submitted with cleared checkpoint.
-- Job `153915`: token sweep submitted with `K_VALUES="256 384 512"` and `TOTAL_TOKEN_BUDGET=2048`.
-- Job `153916`: token sweep submitted with `K_VALUES="256 384 512"`, `TOTAL_TOKEN_BUDGET=2048`, `RESAMPLING_STRATEGY=ess_adaptive`.
-- Submission hiccup: initial `Permission denied` on `run_smc_token_sweep_array.sh`; fixed by `chmod +x`.
-- Job `154122`: PRM800K SFT (`run_sft_prm800k_h200.sh`) completed on `tg10502` (H200x8, `00:47:15`, `ExitCode=0:0`).
-- Job `154126`: PRM800K SFT (`run_sft_prm800k_h100.sh`) completed on `tg11101` (H100x4, `01:28:23`, `ExitCode=0:0`).
-
-**Outputs to check when jobs finish:**
-- Job `153914` logs: `/scratch/l/liaidan/t-rex/slurm/smc_153914.out` and `/scratch/l/liaidan/t-rex/slurm/smc_153914.err`
-- Job `153914` results: `/scratch/l/liaidan/t-rex/results/smc_baseline/summary.json` and `/scratch/l/liaidan/t-rex/results/smc_baseline/generations/generations.jsonl`
-- Job `153915` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153915_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153915_*.err`
-- Job `153915` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k512/summary.json`
-- Job `153916` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.err`
-- Job `153916` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k512/summary.json`
+**Latest cluster submissions (2026-02-09):**
+- Job `154468`: PRM800K SFT checkpoint eval COMPLETED (`00:56:43`, `ExitCode=0:0`, node `tg10704`). Results below.
+- Jobs `153914`, `153915`, `153916` (and retries `153941`, `153942`, `153945`): ALL FAILED within 2s. Root cause: `/var/venv/bin/activate: No such file or directory`.
 
 ---
 
@@ -112,6 +102,58 @@ bash trex/scripts/tamia/run_eval_prm800k_sft_checkpoints.sh
 
 **Decision rule:**
 - Pick the checkpoint with better pass@k profile across both GSM8K and MATH-500, then use it as the default generator for TSMC experiments.
+
+### Results (Job 154468, 2026-02-05)
+
+**Job details:** COMPLETED on node `tg10704` (H100x4), elapsed `00:56:43`, `ExitCode=0:0`.
+
+**GSM8K Platinum (N=16):**
+
+| Metric | Job 154122 (H200x8, gpt_loss=0.306) | Job 154126 (H100x4, gpt_loss=0.256) |
+|--------|--------------------------------------|--------------------------------------|
+| best_temp | 0.8 | 0.6 |
+| pass@1 | 68.6% | **76.0%** |
+| pass@2 | 85.1% | **89.1%** |
+| pass@4 | 93.7% | **95.3%** |
+| pass@8 | 97.4% | 97.7% |
+| pass@16 | **99.0%** | 98.8% |
+
+**MATH-500 (N=32):**
+
+| Metric | Job 154122 (H200x8, gpt_loss=0.306) | Job 154126 (H100x4, gpt_loss=0.256) |
+|--------|--------------------------------------|--------------------------------------|
+| best_temp | 1.0 | 0.8 |
+| pass@1 | 19.9% | **25.6%** |
+| pass@2 | 29.8% | **35.1%** |
+| pass@4 | 39.9% | **43.7%** |
+| pass@8 | 49.0% | **51.1%** |
+| pass@32 | **63.2%** | 62.4% |
+
+**Comparison with baselines:**
+
+| Model | GSM8K pass@1 | MATH-500 pass@1 |
+|-------|-------------|-----------------|
+| Base Qwen2.5-7B | — | 53.3% |
+| GRPO-trained | 38.6% | — |
+| PPO-trained | 25.2% | — |
+| PRM800K SFT (154122, H200x8) | 68.6% | 19.9% |
+| PRM800K SFT (154126, H100x4) | **76.0%** | 25.6% |
+
+### Checkpoint Selection Decision
+
+**Selected checkpoint: `job_154126`** (H100x4, `/scratch/l/liaidan/t-rex/results/prm800k_sft/job_154126/ckpt`)
+
+- Wins on pass@1 across both GSM8K (+7.4pp) and MATH-500 (+5.7pp) over `job_154122`.
+- The performance gap is due to `154126` running 2x micro-steps (22,982 vs 11,491) with 4 GPUs, resulting in more gradient updates and lower final loss.
+- **Caveat:** Both SFT checkpoints show severe MATH-500 regression vs the base model (25.6% vs 53.3%). PRM800K SFT improves GSM8K substantially but causes catastrophic forgetting on competition math. For SMC/TSMC experiments targeting MATH-500, the base Qwen2.5-7B may be preferable.
+
+### SMC Re-run Failure Report (2026-02-09)
+
+Jobs `153914` (SMC baseline), `153915` (token sweep, every_step), `153916` (token sweep, ess_adaptive), and retry batches `153941`, `153942`, `153945` all FAILED within 2 seconds.
+
+**Root cause:** Scripts reference `/var/venv/bin/activate` which does not exist on compute nodes. The venv activation path needs to be corrected to the project venv (e.g., `/project/6100862/liaidan/t-rex/venv/bin/activate` or similar).
+
+**Action required:** Fix venv path in `run_smc_baseline.sh` and `run_smc_token_sweep_array.sh`, then resubmit.
 
 ---
 
