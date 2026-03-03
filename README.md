@@ -1,5 +1,7 @@
 # T-REX: Twisted Replica Exchange for Bootstrapping Reasoning
 
+(NOTE: This repo is VERY much a work in progress.)
+
 T-REX is a research project that extends [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) with probabilistic inference methods for improving mathematical reasoning in large language models. It addresses the "narrow passage" problem in constrained language generation — where correct reasoning paths require specific sequences of steps that standard autoregressive sampling struggles to find.
 
 The core idea: instead of relying solely on training-time optimization (RLHF/GRPO) or brute-force sampling (Best-of-N), T-REX combines **parallel tempering**, **twisted Sequential Monte Carlo (SMC)**, and **non-reversible transport** to efficiently search the space of reasoning traces at inference time.
@@ -144,11 +146,3 @@ T-REX builds on top of OpenRLHF's distributed infrastructure:
 - **DeepSpeed ZeRO-3** for memory-efficient training
 
 The T-REX-specific components (SMC, tempering, twist learning) are in the `trex/` directory and are designed to be modular — each can be used independently or composed together.
-
-## References
-
-- Syed et al. (2022) — Non-reversible parallel tempering
-- Feng et al. — Twisted SMC for language models
-- Kim et al. (2025) — Twisted SMC with self-distillation
-- Puri et al. (2025) — Rollout Roulette (SMC steering baseline)
-- Hu et al. (2024) — [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF)
