@@ -1,684 +1,296 @@
 # Implementation Plan for T-REX
 
-**Last Updated:** 2026-02-02
+**Last Updated:** 2026-03-04
 
 **NOTE:** We should always update this plan with our progress once we have implemented something and it works.
 
-We should have three abstract components:
+**Previous approach (archived):** The Feb 2026 approach (Twisted SMC + Block-Gibbs transport + learned value head/critic) is archived in `docs/archive/2026-feb/`. The project pivoted in March 2026 to the simpler multi-chain SMC with mixture proposals described below.
 
-1. Exploration through the usage of high temperatures and non-reversible parallel tempering to move between states
-2. Twisted Sequential Monte Carlo (TSMC) to guide a model at a fixed temperature toward high-value regions efficiently while maintaining diversity of a set of particles
-3. An abstract transport mechanism to help move particles between different temperature states. In high-dimensional spaces like language, the "Hot" distribution (Creative/Chaotic) and the "Cold" distribution (Rigorous/Narrow) might have almost zero overlap. If you try to swap them directly, the Cold model calculates an acceptance probability of almost zero.
+---
+
+## Algorithm Summary
+
+T-REX runs K independent SMC chains at different temperatures β_1=0 (hot, pure prior) to β_K=1 (cold, full posterior). Each chain uses a PRM for incremental reweighting. Cold chains absorb particles from adjacent hot chains via mixture proposals (Bernoulli coin flip with probability λ), with importance reweighting w = R(x)^{Δβ}. This is "zero-rejection" communication — no MH accept/reject step needed.
+
+Key formula: `w_t^{k,(i)} = (R(x_{1:t}) / R(x_{1:t-1}))^{β_k}`
+
+See `docs/HIGH_LEVEL_CONTEXT.md` for full mathematical specification.
 
 ---
 
 ## Current Repository Status
 
-### ✅ Implemented Components
+### Completed Components (from prior work, still reusable)
 
 | Component | Location | Status | Notes |
 |-----------|----------|--------|-------|
-| **Best-of-N Baseline** | `trex/baselines/best_of_n_baseline.py` | Complete | Temperature sweep, checkpointing, WandB |
-| **GRPO Training** | `trex/baselines/grpo_reward_func.py` | Complete | Efficiency tracking, threshold detection |
-| **Math Verification** | `trex/eval/math_verifier.py` | Complete | HF math_verify, SymPy, timeout protection |
-| **Answer Parsing** | `trex/eval/parser.py` | Complete | LaTeX, boxed format, numeric extraction |
+| **Best-of-N Baseline** | `trex/baselines/best_of_n_baseline.py` | Complete | Temperature sweep, checkpointing |
+| **GRPO Training** | `trex/baselines/grpo_reward_func.py` | Complete | Efficiency tracking |
+| **Math Verification** | `trex/eval/math_verifier.py` | Complete | HF math_verify, SymPy, timeout |
+| **Answer Parsing** | `trex/eval/parser.py` | Complete | LaTeX, boxed format, numeric |
 | **Math Grading** | `trex/eval/grader.py` | Complete | Symbolic equality, numeric comparison |
 | **Datasets** | `trex/data/*.jsonl` | Complete | GSM8K, MATH, MATH-500 |
-| **SLURM Scripts** | `trex/scripts/*.sh` | Complete | Auto-requeue, checkpointing |
-| **Standard SMC Steering** | `trex/baselines/smc_steering_baseline.py` | Complete | PRM/ORM guided, SLURM checkpointing |
-| **SMC Core + Resampling** | `trex/smc/particle_filter.py`, `trex/smc/resampling.py` | Complete | Unit-tested |
+| **SLURM Scripts** | `trex/scripts/tamia/*.sh` | Complete | Auto-requeue, checkpointing |
+| **SMC Core + Resampling** | `trex/smc/particle_filter.py`, `trex/smc/resampling.py` | Complete | Unit-tested, reusable |
 | **LLM Particle Filter** | `trex/smc/llm_particle_filter.py` | Complete | Step-wise generation, PRM scoring |
-| **Twisted SMC Core** | `trex/smc/twisted_smc.py` | Complete | Twist weights + tests; value head pending |
-| **Tempering Primitives** | `trex/tempering/*.py` | Complete | Temperature ladder, swap pairs, replica exchange |
 | **Efficiency Tracking** | `trex/utils/efficiency_tracker.py` | Complete | Used by RL baselines |
 
-### 🔄 Ready for Testing
+### Code from old approach (may need cleanup/removal)
 
 | Component | Location | Status | Notes |
 |-----------|----------|--------|-------|
-| **PPO Baseline** | `trex/baselines/ppo_reward_func.py` | Ready | Uses GAE, critic network |
-| **SMC Steering Re-run** | `trex/baselines/smc_steering_baseline.py` | Ready | Post stop-string fix; needs re-eval |
+| **Twisted SMC Core** | `trex/smc/twisted_smc.py` | Obsolete | Old twist-based weighting with learned value head |
+| **Tempering Primitives** | `trex/tempering/*.py` | Partially reusable | Temperature ladder is reusable; MH exchange logic is obsolete |
+| **Value Head** | `trex/models/value_head.py` | Obsolete | No longer needed |
+| **Twist Model** | `trex/models/twist_model.py` | Obsolete | No longer needed |
+| **Value Trainer** | `trex/training/value_trainer.py` | Obsolete | No longer needed |
+| **TSMC Baseline** | `trex/baselines/tsmc_baseline.py` | Obsolete | Old TSMC runner |
 
-### ❌ Not Yet Implemented
+### Not Yet Implemented (new algorithm)
 
-| Component | Priority | Complexity | Dependencies |
-|-----------|----------|------------|--------------|
-| Value Head + TSMC Baseline | High | Medium | Value head training, TSMC runner |
-| Parallel Tempering (Full) | Medium | High | Multi-chain orchestration, exchange integration |
-| Transport Mechanisms | Medium | High | Critic network, Block-Gibbs editor |
-| Replica Exchange SMC | Low | High | Parallel tempering + SMC |
-
----
-
-## Phase 1: Complete Baselines
-
-### 1.1 PPO Baseline for Math Reasoning
-
-**Goal:** Establish PPO baseline using existing OpenRLHF infrastructure.
-
-**Implementation:**
-- [x] Create `trex/baselines/ppo_reward_func.py` (reuses GRPO reward function)
-- [x] Create `trex/scripts/tamia/run_ppo_baseline.sh` with PPO-specific hyperparameters
-- [x] Key differences from GRPO:
-  - Uses `--advantage_estimator gae` instead of `group_norm`
-  - Requires critic network (value function)
-  - Different KL penalty schedule
-
-**Configuration:**
-```bash
-# PPO-specific args
---advantage_estimator gae
---critic_learning_rate 9e-6
---init_kl_coef 0.01  # Higher than GRPO
---kl_estimator k1
-```
-
-**Files Created:**
-- `trex/baselines/ppo_reward_func.py`
-- `trex/scripts/tamia/run_ppo_baseline.sh`
+| Component | Priority | Complexity | Notes |
+|-----------|----------|------------|-------|
+| Single-chain SMC with PRM reweighting | High | Medium | Stage 3 of new spec |
+| Multi-chain SMC with mixture proposals | High | High | Stage 4 — core novelty |
+| Diagnostics (ESS, injection survival, log Z) | Medium | Low | Stage 5 |
+| PRM800K SFT (may already have checkpoints) | Medium | Low | Stage 6 |
+| Full experimental evaluation | Medium | Medium | Stage 7 |
 
 ---
 
-### 1.2 Standard SMC Steering (Rollout Roulette Baseline)
+## Stage 1: Base LLM Inference Wrapper
 
-**Goal:** Implement the Puri et al. (2025) baseline for inference-time compute scaling.
+**Goal:** Build a module that takes a prompt and partial sequence and returns next-token samples and log-probabilities.
 
-**Reference:** Section 6.2 in HIGH_LEVEL_CONTEXT.md
+**What to implement:**
+- `sample_next_token(model, x_{1:t-1}) → x_t`
+- `log_prob(model, x_{1:t-1}, x_t) → float`
+- Batched versions for N particles simultaneously
 
-**Core Algorithm:**
-```
-1. Initialize N particles with prompt
-2. For each step t:
-   a. Expansion: Generate next "step" (until \n or ## Step) for each particle
-   b. Weighting: Score particles using Process Reward Model (PRM)
-   c. Resampling: Multinomial/Systematic resampling proportional to weights
-3. Final Selection: Best-of-N (ORM) or majority voting
-```
+**Status:** Largely covered by existing `trex/smc/llm_particle_filter.py` and vLLM integration. May need refactoring to support the new multi-chain architecture.
 
-**Implementation Status:** ✅ Complete
-
-**Key Components Implemented:**
-- **SMC Engine:** `LLMParticleFilter` extending base `ParticleFilter` to handle LLM generation and PRM scoring.
-- **Reward Modeling:** `RewardModel` wrapper for `Qwen/Qwen2.5-Math-PRM-7B` supporting both PRM (step-wise) and ORM (final) scoring.
-- **Step Detection:** Regex-based detection of `## Step N:` patterns.
-- **Checkpointing:** Full SLURM-compatible checkpointing (state + particles).
-- **Configuration:** `SMCSteeringConfig` for easy experimentation.
-
-**Files Created:**
-- `trex/baselines/smc_steering_baseline.py` - Main baseline runner
-- `trex/baselines/smc_config.py` - Configuration classes
-- `trex/smc/llm_particle_filter.py` - LLM-aware particle filter
-- `trex/models/reward_model.py` - PRM/ORM wrapper
-- `trex/models/prm_config.py` - PRM token configuration
-- `trex/scripts/run_smc_baseline.sh` - Execution script
-- `trex/smc/particle_filter.py` - Core logic
-- `trex/smc/resampling.py` - Resampling logic
+**Success criteria:**
+- Sampling produces valid tokens from model vocabulary
+- Batched inference handles N particles efficiently on GPU without OOM (target N=64 or N=128)
 
 ---
 
-## Phase 2: Twisted Sequential Monte Carlo (TSMC)
+## Stage 2: Process Reward Model (PRM) Integration
 
-### 2.0 Plan Review: Issues and Gaps (2026-02-02)
+**Goal:** Integrate a PRM that scores partial sequences, returning values in (0, 1].
 
-The following issues should be addressed before implementation to avoid instability and rework:
+**What to implement:**
+- `score_prm(prm_model, x_{1:t}) → float ∈ (0, 1]`
+- Must handle partial sequences (not just complete solutions)
+- Clamp outputs: if raw PRM ≤ 0, clamp to epsilon (e.g., 1e-8)
+- Batched scoring for N particles
 
-1. **Undefined target for ψ / value head**: The plan does not specify whether the value head predicts a probability, a log-value, or a bounded score. This affects weight computation and numerical stability.
-2. **Sparse training signal**: Only using final binary reward will lead to high-variance targets; no variance reduction or dense shaping is specified.
-3. **Weighting instability**: `values_t / values_{t-1}` is unstable in raw space and prone to exploding or vanishing weights; no log-space or clipping specified.
-4. **Token vs step alignment**: Value head is per-token but the weighting is per-step. Aggregation from tokens to steps is unspecified.
-5. **vLLM hidden-state access**: The plan assumes vLLM compatibility without specifying how to obtain hidden states; fallback is not defined.
-6. **Twist model API**: The interface for `TwistModel` and how it plugs into `LLMParticleFilter` is not defined.
-7. **Evaluation protocol**: No explicit metrics or ablations to validate the value head and twisted weighting.
-8. **Data pipeline details**: Trajectory buffer format, storage limits, and checkpointing are unspecified.
-9. **Online vs offline training**: Rollout cadence and model staleness are not addressed.
-10. **Safety checks**: No guardrails for NaNs, zero/negative ψ, or degenerate weights.
+**Status:** Existing `trex/models/reward_model.py` wraps `Qwen/Qwen2.5-Math-PRM-7B`. Need to verify it meets the strict positivity requirement and supports the incremental weight computation pattern.
 
-The plan below adds the missing details and acceptance criteria.
-
-### 2.1 Value Head Architecture
-
-**Goal:** Add a learnable value head to predict expected future reward. This should probably use a Transformer but we can substitute it with different options.
-
-**Reference:** Section 2.3 and 6.2 (Twisted SMC baseline) in HIGH_LEVEL_CONTEXT.md
-
-**Architecture:**
-```
-Base LLM Hidden State [B, T, H]
-    → Linear(H, H//4)
-    → ReLU
-    → Linear(H//4, 1)
-    → Sigmoid
-    → Value [B, T, 1]
-```
-
-**Implementation:**
-- [ ] Create `trex/models/value_head.py` - Value head architecture
-- [ ] Create `trex/models/twist_model.py` - Wrapper combining base LLM + value head
-- [ ] Ensure compatibility with vLLM for efficient inference
-
-**Value Head Options:**
-We should be able to use all of these as the value head in a plug and play fashion.
-1. **Simple Linear:** `Linear(Hidden_Dim, 1)` - Fastest, might underfit
-2. **MLP:** `Linear(H, H//4) → ReLU → Linear(H//4, 1)` - Recommended starting point
-3. **Attention-pooled:** Pool over sequence before prediction - For long contexts
-4. **Transformers**
-
-**Files to Create/Update:**
-- `trex/models/__init__.py` (update exports)
-- `trex/models/value_head.py`
-- `trex/models/twist_model.py`
-
-**Additional Design Decisions (New):**
-- **Define ψ and output space:** Value head outputs `v`; define ψ = `softplus(v)` (or `sigmoid(v)` if treating as probability).
-- **Token → step aggregation (configurable):** `last`, `mean`, or `max` token value within a step.
-- **Log-space weights (for stability):** `log_w_t = log ψ_t - log ψ_{t-1}` with clamp.
-
-**Acceptance Criteria (New):**
-- Unit test verifies output shapes and deterministic behavior on fixed inputs.
-- Can run on a small HF model without vLLM (sanity check).
+**Success criteria:**
+- PRM scores in (0, 1] for all inputs
+- Scoring N partial sequences is fast enough to not bottleneck the SMC loop
 
 ---
 
-### 2.2 Value Head Training (Self-Distillation)
+## Stage 3: Single-Chain SMC Sampler
 
-**Goal:** Train value head using Monte Carlo returns from rollouts.
+**Goal:** Implement the Propagate → Reweight → Resample loop for a single chain with fixed temperature β.
 
-**Reference:** Section 4 (Phase 3: Online Learning) in HIGH_LEVEL_CONTEXT.md
+**What to implement:**
+- Incremental weight computation: `w_t^{(i)} = (R(x_{1:t}^{(i)}) / R(x_{1:t-1}^{(i)}))^β`
+- All weight computations in **log space** for numerical stability
+- Systematic resampling with ESS-based triggering (resample when ESS < N/2)
+- Normalizing constant estimation: `log Z_hat = Σ_t [logsumexp(log_w) - log(N)]`
+- Particle storage: full trajectories `x_{1:t}^{(i)}` and cached PRM scores
+- EOS handling: freeze particles that generate EOS, set subsequent weights to 1.0
 
-**Training Algorithm:**
-```
-1. Sample K trajectories per prompt using current policy
-2. Verify final answers → Binary reward R ∈ {0, 1}
-3. Assign final reward to ALL steps in trajectory (Monte Carlo)
-4. Train: L = MSE(V(x_{1:t}), R)
-5. Iterate: Use improved V to bias sampling, collect new data
-```
-
-**Implementation:**
-- [ ] Create `trex/training/value_trainer.py` - Training loop for value head
-- [ ] Create `trex/training/trajectory_buffer.py` - Store trajectories with rewards
-- [ ] Integration with WandB for tracking value loss and accuracy correlation
-
-**Training Configuration:**
+**Key implementation details:**
 ```python
-@dataclass
-class ValueTrainingConfig:
-    learning_rate: float = 1e-4
-    batch_size: int = 32
-    num_rollouts_per_prompt: int = 8
-    update_frequency: int = 100  # Steps between value updates
-    ema_decay: float = 0.99      # For target value smoothing
+log_w_local = beta_k * (log_R_curr - log_R_prev)
+log_W = log_w - logsumexp(log_w)  # normalized log weights
+W = exp(log_W)                     # for resampling
+log_Z += logsumexp(log_w) - log(N) # accumulate normalizing constant
 ```
 
-**Files to Create:**
-- `trex/training/__init__.py`
-- `trex/training/value_trainer.py`
-- `trex/training/trajectory_buffer.py`
-- `trex/scripts/train_value_head.sh`
-
-**Additional Design Decisions (New):**
-- **Target shaping (optional):** `R_t = α * PRM_t + (1-α) * R_final` to reduce variance.
-- **Loss:** MSE for regression, BCE if ψ is probability.
-- **EMA target:** Optionally maintain EMA of targets to stabilize updates.
-- **Buffer policy:** Fixed size with reservoir sampling or FIFO; spill to disk (JSONL/Parquet).
-
-**Acceptance Criteria (New):**
-- Training loss decreases on a toy dataset.
-- Positive correlation between value predictions and final reward.
+**Success criteria:**
+- At β=0: all weights exactly 1.0, output indistinguishable from i.i.d. base model samples
+- At β=1: particles concentrate on higher-reward trajectories vs β=0
+- ESS never collapses to 1 for sustained periods
+- On GSM8K, single-chain SMC at β=1 with N=64 should outperform Best-of-N with N=64
 
 ---
 
-### 2.3 Twisted SMC Inference
+## Stage 4: Multi-Chain SMC with Mixture Proposals (T-REX)
 
-**Goal:** Use learned value head to guide particle filtering.
+**Goal:** Implement K chains with inter-chain communication via mixture proposals. This is the core novelty.
 
-**Reference:** Section 6.2 (Twisted SMC baseline) in HIGH_LEVEL_CONTEXT.md
+**What to implement:**
+- K independent SMC chains with temperatures `β_1=0 < β_2 < ... < β_K=1`
+- Mixture proposal mechanism: Bernoulli coin flip per particle (probability λ)
+  - Local extension (prob 1-λ): extend from own chain's particle
+  - Hot injection (prob λ): sample full trajectory from adjacent hot chain
+- Hot injection weight: `w_{t,inject}^{(i)} = R(x_{1:t}^{(i)})^{β_{k+1} - β_k}`
+- Trajectory replacement: when injecting, replace **entire** particle trajectory
+- Cache management: after injection, update cached PRM scores (can reuse hot chain's cached value)
+- Communication direction: unidirectional hot → cold (chain k feeds into chain k+1)
 
-**Key Difference from Standard SMC:**
-- Standard SMC: Weight by PRM score `w_t = PRM(x_{1:t})`
-- Twisted SMC: Weight by value ratio `w_t = ψ(x_{1:t}) / ψ(x_{1:t-1})`
+**Temperature schedule (starting defaults):**
+- K=4, linear: `β = [0.0, 0.33, 0.67, 1.0]`
+- Also try geometric: `β = [0.0, 0.1, 0.4, 1.0]`
 
-**Implementation:**
-- [x] Extend `trex/smc/particle_filter.py` to support twist-based weighting
-- [x] Create `trex/smc/twisted_smc.py` - TSMC-specific logic
-- [ ] Create `trex/models/value_head.py` and `trex/models/twist_model.py`
-- [ ] Create `trex/training/value_trainer.py` and `trex/training/trajectory_buffer.py`
-- [ ] Create `trex/baselines/tsmc_baseline.py` - Evaluation runner
-
-**Weight Computation:**
-```python
-def compute_twisted_weights(values_t, values_t_minus_1):
-    """
-    Incremental importance weight for TSMC.
-
-    w_t = ψ(x_{1:t}) / ψ(x_{1:t-1})
-
-    Intuition: If value increased, this was a good step → high weight
-    """
-    return values_t / (values_t_minus_1 + 1e-8)
-```
-
-**Files Remaining:**
-- `trex/models/value_head.py`
-- `trex/models/twist_model.py`
-- `trex/training/value_trainer.py`
-- `trex/training/trajectory_buffer.py`
-- `trex/baselines/tsmc_baseline.py`
-- `trex/scripts/run_tsmc_baseline.sh`
-
-**Additional Design Decisions (New):**
-- **Stable weighting:** use log-space weights with clamp: `log_w_t = clamp(log ψ_t - log ψ_{t-1}, -c, c)`
-- **Degeneracy handling:** if all weights are NaN/Inf or zero, fall back to uniform weights and log a warning.
-- **Step aggregation:** value for step t is computed using the aggregation policy from 2.1.
-
-**Acceptance Criteria (New):**
-- TSMC runs end-to-end on a small subset without weight collapse.
-- Log-space weights remain finite and resampling is stable.
+**Success criteria:**
+- Some injected particles survive resampling in the cold chain (injection rate × survival rate > 0)
+- More diverse valid solutions in cold chain vs single-chain SMC
+- Cold chain accuracy ≥ single-chain SMC at β=1 on GSM8K and MATH-500
+- Accuracy monotonically improves as N increases
 
 ---
 
-### 2.4 Evaluation and Ablations (New)
+## Stage 5: Diagnostics
 
-**Goal:** Validate that TSMC improves efficiency or accuracy over SMC-PRM and Best-of-N.
+**Goal:** Implement monitoring tools for algorithm health.
 
-**Metrics:**
-- Accuracy (final answer)
-- Efficiency (accuracy vs. tokens or model calls)
-- Diversity (unique solutions)
-- Weight stability (entropy of resampling weights)
+**What to implement:**
+- Per-chain ESS over time: `ESS_t^k` heatmaps
+- Per-chain log Z estimate
+- Injection survival rate per chain per step
+- Particle genealogy tracking (ancestor indices through resampling)
+- Reward distribution per chain (histograms of R values)
 
-**Ablations:**
-- SMC-PRM vs TSMC (value head)
-- Token aggregation: `last` vs `mean` vs `max`
-- Training target: binary-only vs PRM-shaped
-
-**Acceptance Criteria:**
-- TSMC improves at least one efficiency metric without reducing accuracy on a pilot subset.
-
----
-
-### 2.5 vLLM Integration Risk Mitigation (New)
-
-**If hidden states are not accessible or too slow:**
-- Train value head offline on HF model and export weights.
-- Use a standalone “value model” that consumes text and outputs ψ (reward-model style).
-
-**Decision Gate:**
-- Try vLLM hidden-state access once; if blocked, switch to standalone value model.
+**Success criteria:**
+- ESS never collapses to 1 for sustained periods
+- Injection survival rate > 5% in adjacent colder chain
+- Cold chain reward distribution shifts rightward over steps
+- No NaN or Inf in weights or log Z
 
 ---
 
-## Phase 3: Non-Reversible Parallel Tempering
+## Stage 6: SFT of Base Model
 
-**Key Innovation:** We use a **non-reversible** parallel tempering scheme with a deterministic alternating swap schedule. This converts the O(K²) random walk of standard PT into O(K) ballistic flow, dramatically improving mixing efficiency.
+**Goal:** Fine-tune base model on step-by-step reasoning data.
 
-**Reference:** Section 2.2 and 2.3 in HIGH_LEVEL_CONTEXT.md, Syed et al. (2022)
+**Status:** PRM800K SFT checkpoints may already exist from prior work:
+- Job `154122` (H200x8): `/scratch/l/liaidan/t-rex/results/prm800k_sft/job_154122/ckpt`
+- Job `154126` (H100x4): `/scratch/l/liaidan/t-rex/results/prm800k_sft/job_154126/ckpt`
 
-### 3.1 Temperature Ladder
+**Models:** Qwen2.5-7B (primary), optionally Qwen2.5-14B, Qwen2.5-32B, LLaMA-3.1-8B.
 
-**Goal:** Maintain K parallel chains at different temperatures with efficient non-reversible communication.
-
-**Temperature Schedule:**
-```
-β_0 = 0.0  (Hot: Pure exploration, π ≈ p_0)
-β_1 = 0.2
-β_2 = 0.5
-β_3 = 0.8
-β_K = 1.0  (Cold: Strict posterior, π ∝ p_0 · φ)
-```
-
-**Non-Reversible Swap Schedule:**
-```
-S_odd  = {(1,2), (3,4), (5,6), ...}  # Odd timesteps
-S_even = {(2,3), (4,5), (6,7), ...}  # Even timesteps
-```
-By alternating between these sets, particles flow ballistically through the ladder instead of diffusing randomly.
-
-**Implementation:**
-- [x] Create `trex/tempering/temperature_ladder.py` - Temperature schedule + swap pairs
-- [x] Create `trex/tempering/exchange.py` - Acceptance ratios + swap primitive
-- [ ] Create `trex/tempering/parallel_chains.py` - Multi-chain orchestration
-- [ ] GPU parallelization: Each temperature on subset of GPUs
-
-**Design:**
-```python
-@dataclass
-class TemperingConfig:
-    num_temperatures: int = 5
-    beta_schedule: str = "linear"  # linear, geometric, adaptive
-    min_beta: float = 0.0
-    max_beta: float = 1.0
-    particles_per_temp: int = 8
-    non_reversible: bool = True    # Use deterministic alternating schedule
-```
-
-**Files Remaining:**
-- `trex/tempering/parallel_chains.py`
-- `trex/tempering/diagnostics.py`
+**Success criteria:**
+- SFT model produces step-by-step solutions in expected format
+- Pass@1 accuracy on GSM8K improves over pre-SFT base
+- Outputs parseable by PRM
 
 ---
 
-### 3.2 Non-Reversible Replica Exchange
+## Stage 7: Experimental Evaluation
 
-**Goal:** Enable efficient communication between temperature chains using ballistic flow.
+**Goal:** Run the full experimental comparison.
 
-**Reference:** Section 2.3 in HIGH_LEVEL_CONTEXT.md, Syed et al. (2022)
+**Benchmarks:** GSM8K (primary), MATH-500 (secondary)
 
-**The Problem with Standard PT:**
-Standard parallel tempering chooses swap pairs at random, causing particles to perform a random walk through the temperature ladder. This requires $O(K^2)$ steps for a sample to propagate from prior to posterior.
+### Baselines
 
-**The Solution: Deterministic Alternating Schedule**
+All baselines receive an equivalent computational budget for fair comparison.
 
-Instead of random swaps, we use a deterministic schedule that alternates between two swap sets:
+1. **Best-of-N (BoN) Sampling** *(complete)*: Standard generation from the base LLM with no inference-time interventions. Sweep temperatures T ∈ {0.6, 0.8, 1.0, 1.2}. Defines the baseline difficulty and tests whether T-REX outperforms simply allocating equivalent compute to parallel random sampling.
 
-```python
-S_odd  = [(1,2), (3,4), (5,6), ...]  # Attempted at odd timesteps
-S_even = [(2,3), (4,5), (6,7), ...]  # Attempted at even timesteps
-```
+2. **GRPO / PPO** *(complete)*: RL-trained models evaluated via BoN harness. Tests training-time vs inference-time compute scaling.
 
-This induces **ballistic flow**: successful particles propagate from prior to posterior in $O(K)$ steps.
+3. **Beam Search / Tree Search**: Deterministic heuristic search baseline. Provides a strong non-random search comparison to demonstrate the necessity of particle-based methods.
 
-**Exchange Algorithm:**
-```
-At timestep t:
-1. Select swap set: S = S_odd if t % 2 == 1 else S_even
-2. For each pair (k, k+1) in S (can be parallelized):
-   a. Propose swap: x_k ↔ x_{k+1}
-   b. Compute acceptance ratio:
-      α = min(1, (φ(x_k)/φ(x_{k+1}))^{β_{k+1} - β_k})
-   c. Accept with probability α
-```
+4. **Standard SMC with PRM**: Vanilla particle filtering (single chain, β=1) using the base model as proposal and the same PRM for reweighting. Critical scientific baseline — standard SMC can become trapped in local optima (locally-promising but fundamentally flawed strategies). Outperforming standard SMC at equal compute validates our core algorithmic claim.
 
-**Key Insight (from Section 3.2 in HIGH_LEVEL_CONTEXT.md):**
-When using Block-Gibbs proposals from base model, the likelihood ratio cancels:
-```
-α = min(1, (φ(x')/φ(x))^{β_target})
-```
-This means we only need to evaluate the constraint φ, not compute sequence log-probs!
+5. **Twisted SMC (Guided Proposals)**: SMC with value-guided proposals (cf. Zhao et al., Feng et al.). Twisted SMC faces a chicken-and-egg problem: learning an accurate twist function requires valid solution trajectories, which are initially unknown and sparse. Isolates the necessity of replica exchange for uncovering sparse solutions.
 
-**Implementation:**
-- [x] Create `trex/tempering/exchange.py` - Replica exchange logic
-- [x] Implement alternating swap schedule (odd/even sets) in `get_swap_pairs()`
-- [x] Implement acceptance ratio with constraint-only evaluation
-- [ ] Track exchange statistics and flow direction for diagnostics
+6. **Swap-Based Parallel Tempering (PT / NRPT)**: Standard parallel tempering (including non-reversible PT) using Metropolis-Hastings swap acceptance criteria. In the high-dimensional discrete text space, standard PT suffers from vanishing swap acceptance rates because the typical sets of hot and cold chains have no overlap. Proves that performance gains come from our zero-rejection mixture injection, not merely from temperature scaling.
 
-**Swap Schedule Implementation:**
-```python
-def get_swap_pairs(timestep: int, num_temperatures: int) -> List[Tuple[int, int]]:
-    """
-    Get swap pairs for non-reversible parallel tempering (0-indexed).
+### Ablation Studies
 
-    Args:
-        timestep: Current timestep (determines odd/even set)
-        num_temperatures: Total number of temperature levels K
+Isolate contributions of T-REX's components: landscape smoothing, mode escape, and zero-rejection particle injection.
 
-    Returns:
-        List of (k, k+1) pairs to attempt swapping
-    """
-    if timestep % 2 == 1:  # Odd timestep
-        # S_odd = {(0,1), (2,3), (4,5), ...}
-        return [(k, k + 1) for k in range(0, num_temperatures, 2)]
-    else:  # Even timestep
-        # S_even = {(1,2), (3,4), (5,6), ...}
-        return [(k, k + 1) for k in range(1, num_temperatures, 2)]
-```
+1. **Soft PRM Potential vs Binary Constraint**: Impact of smoothing the target landscape via intermediate step-level rewards vs enforcing binary correctness only at the terminal step.
 
-**Files Remaining:**
-- `trex/tempering/diagnostics.py`
+2. **Mixture Proposal (Hot Injection) vs Standard SMC Proposal**: Replace the zero-rejection injection mechanism with standard base-model proposals (λ=0). Tests the value of cross-chain communication.
 
----
+3. **Tempering On vs Off**: Whether maintaining multiple temperature chains is necessary to escape local reasoning modes.
 
-## Phase 4: Transport Mechanisms (Advanced)
+4. **Online Twist Learning On vs Off**: Value of dynamically updating the twist function during inference.
 
-### Overview
+5. **Zero-Rejection Injection vs Swap-Based Exchange**: Direct comparison of our communication rule against standard MH swap criteria. Highlights computational efficiency gained by bypassing high rejection rates.
 
-The transport mechanism bridges the gap between "hot" (creative but invalid) and "cold" (rigorous but narrow) distributions. We implement a plug-and-play system to compare different approaches.
+6. **Auxiliary Masking/Infill Editor vs No Auxiliary Network**: Contribution of an auxiliary editing network in proposing valid local transitions in the discrete text space.
 
-**Reference:** IMPLEMENTATION_PLAN.md Section "Abstract Transport Mechanism"
+### Protocol
 
-### 4.1 Transport Interface
+- Sweep N ∈ {16, 32, 64, 128, 256}
+- Report: accuracy, sample efficiency (accuracy vs N), wall-clock time
 
-**Goal:** Define abstract interface for all transport mechanisms.
+### Success Criteria
 
-```python
-class TransportMechanism(ABC):
-    @abstractmethod
-    def transport(
-        self,
-        x_source: str,           # Sample from source distribution
-        beta_source: float,      # Source temperature
-        beta_target: float,      # Target temperature
-    ) -> Tuple[str, float]:      # (transported sample, acceptance prob)
-        pass
-```
-
-**Files to Create:**
-- `trex/transport/__init__.py`
-- `trex/transport/base.py`
-
----
-
-### 4.2 Level 1: Mathematical Tricks (Cheapest)
-
-#### Standard Metropolis-Hastings
-- Direct swap proposal
-- Will have ~0% acceptance in high dimensions
-- Useful as baseline/sanity check
-
-#### Quantile Coupling
-- Transport "luck" not text
-- Map CDF values between distributions
-- Known failure mode: tail mismatch
-
-**Files to Create:**
-- `trex/transport/metropolis_hastings.py`
-- `trex/transport/quantile_coupling.py`
-
----
-
-### 4.3 Level 2: Heuristic Bridges (Mid-Cost)
-
-#### Likelihood Thresholding
-- Mask tokens with P(t) < threshold under cold model
-- Resample masked tokens
-- Risk: Deletes novelty along with errors
-
-**Implementation:**
-- [ ] Create `trex/transport/likelihood_threshold.py`
-- [ ] Implement adaptive threshold selection
-
----
-
-### 4.4 Level 3: Verifier Bridges (High-Cost)
-
-#### PRM-Guided Repair
-- Use Process Reward Model to identify broken steps
-- Mask lowest-scoring step
-- Resample using cold model
-
-**Implementation:**
-- [ ] Create `trex/transport/prm_repair.py`
-- [ ] Integrate with PRM (if available) or use verifier heuristics
-
----
-
-### 4.5 Level 4: Learned Bridges (Research SOTA)
-
-#### Learned Critic + Block-Gibbs Editor
-
-**This is the core T-REX contribution.**
-
-**Components:**
-1. **Critic (C_ω):** Predicts mask M covering tokens causing rejection
-2. **Editor:** Cold model resamples x_M conditioned on x_{-M}
-3. **Twist:** Updates proposal to avoid these errors in future
-
-**Implementation:**
-- [ ] Create `trex/models/critic_head.py` - Token-level masking predictor
-- [ ] Create `trex/transport/block_gibbs.py` - Conditional resampling
-- [ ] Create `trex/transport/learned_transport.py` - Full learned transport
-- [ ] Create `trex/training/critic_trainer.py` - Train critic on repair successes
-
-**Critic Architecture:**
-```
-Hidden State [B, T, H] → Linear(H, 1) → Sigmoid → Mask Prob [B, T, 1]
-```
-
-**Training Signal:**
-- Positive: Masks that led to successful repairs (acceptance)
-- Negative: Masks that didn't help (rejection)
-
-**Files to Create:**
-- `trex/models/critic_head.py`
-- `trex/transport/block_gibbs.py`
-- `trex/transport/learned_transport.py`
-- `trex/training/critic_trainer.py`
-
----
-
-## Phase 5: Full T-REX Integration
-
-### 5.1 Main T-REX Algorithm
-
-**Goal:** Combine all components into the full algorithm.
-
-**Reference:** Section 4 (T-REX Algorithm Lifecycle) in HIGH_LEVEL_CONTEXT.md
-
-**Algorithm:**
-```
-Phase 1: Twisted SMC (Exploration)
-  - Run K particles at each temperature
-  - Use twist function to bias proposals
-  - Resample within temperature rungs
-
-Phase 2: Non-Reversible Transport (Communication)
-  - At fixed intervals, attempt to promote hot samples
-  - Edit: x' = Editor(x_hot)
-  - Accept if φ(x')^β_target > U[0,1] · φ(x_current)^β_target
-
-Phase 3: Online Learning (Self-Distillation)
-  - Collect (x_{1:t}, R) pairs from successful transports
-  - Update twist: L = ||V(x_{1:t}) - R||²
-  - Update critic: Maximize likelihood of successful masks
-```
-
-**Implementation:**
-- [ ] Create `trex/algorithms/trex.py` - Main algorithm orchestration
-- [ ] Create `trex/algorithms/trex_config.py` - Full configuration
-- [ ] Create `trex/scripts/run_trex.sh` - Training/inference script
-
-**Files to Create:**
-- `trex/algorithms/__init__.py`
-- `trex/algorithms/trex.py`
-- `trex/algorithms/trex_config.py`
-- `trex/scripts/run_trex.sh`
+- T-REX at N=64 matches or exceeds Best-of-N at N=256 on GSM8K (4× sample efficiency)
+- T-REX outperforms standard SMC at equal N
+- T-REX with communication (λ>0) outperforms without (λ=0)
+- T-REX outperforms swap-based PT at equal compute (validates zero-rejection mechanism)
 
 ---
 
 ## Implementation Priority Order
 
-### Sprint 1: Baseline Completion (Week 1-2)
-1. ✅ Best-of-N baseline - DONE
-2. ✅ GRPO baseline - DONE
-3. ✅ PPO baseline - DONE (ready for testing)
-4. ✅ Standard SMC Steering baseline - DONE
+### Sprint 1: Single-Chain SMC (Stage 3)
+1. [ ] Refactor/verify PRM integration for strict positivity and caching
+2. [ ] Implement single-chain SMC with log-space weights
+3. [ ] Implement systematic resampling with ESS threshold
+4. [ ] Validate sanity checks (β=0 and β=1)
 
-### Sprint 2: TSMC Foundation (Week 3-4)
-5. [ ] Value head architecture
-6. [ ] Value head training
-7. [ ] Twisted SMC inference
-8. [ ] TSMC baseline evaluation
+### Sprint 2: Multi-Chain T-REX (Stage 4)
+5. [ ] Implement multi-chain orchestration
+6. [ ] Implement mixture proposal mechanism (Bernoulli + trajectory injection)
+7. [ ] Implement hot injection reweighting
+8. [ ] Validate inter-chain communication
 
-### Sprint 3: Parallel Tempering (Week 5-6)
-9. [x] Temperature ladder + swap pairs
-10. [ ] Parallel chains orchestration
-11. [x] Replica exchange mechanism (core)
-12. [ ] Diagnostics and visualization
+### Sprint 3: Diagnostics + Evaluation (Stages 5, 7)
+9. [ ] Implement diagnostic tools
+10. [ ] Run single-chain SMC vs Best-of-N comparison
+11. [ ] Run T-REX vs single-chain SMC comparison
+12. [ ] Run λ=0 ablation (value of communication)
 
-### Sprint 4: Transport Mechanisms (Week 7-8)
-13. [ ] Transport interface
-14. [ ] Simple baselines (MH, threshold)
-15. [ ] Learned critic + Block-Gibbs
+---
 
-### Sprint 5: Integration (Week 9-10)
-16. [ ] Full T-REX algorithm
-17. [ ] End-to-end training pipeline
-18. [ ] Comprehensive evaluation
+## Hyperparameter Summary
+
+| Parameter | Default | Sweep Range | Notes |
+|-----------|---------|-------------|-------|
+| N (particles) | 64 | {16, 32, 64, 128, 256} | Primary compute knob |
+| K (chains) | 4 | {2, 3, 4, 6} | More chains = more exploration |
+| β schedule | Linear [0, 0.33, 0.67, 1] | Linear, geometric | Start with linear |
+| λ (mix weight) | 0.1 | {0.05, 0.1, 0.2, 0.3} | Too high → cold chain flooded |
+| ESS threshold | N/2 | {N/4, N/3, N/2} | Lower = less resampling |
+| LLM temperature | 1.0 | {0.8, 1.0, 1.2} | Applied inside P_θ |
 
 ---
 
 ## GPU Allocation Strategy
 
+**Total per step:** K × N LLM forward passes + K × N PRM evaluations.
+
 Assuming 4-8 H100/H200 GPUs:
-
-**Training:**
-- Value head: 1-2 GPUs (gradient accumulation)
-- Critic head: 1-2 GPUs
-- Rollout generation: All GPUs via vLLM
-
-**Inference (TSMC/Parallel Tempering):**
-- Option A: All temperatures on all GPUs (batch dimension)
-- Option B: Temperature partitioning (2 temps × 4 GPUs)
-- Option C: Pipeline parallelism for large models
-
-**Recommended:** Start with Option A for simplicity, move to B if memory constrained.
+- Option A: All chains on all GPUs (batch dimension) — simplest, start here
+- Option B: Chain partitioning (1-2 chains per GPU) — if memory constrained
 
 ---
 
 ## Testing Strategy
 
-Each component should have:
-1. **Unit tests:** Isolated function testing
-2. **Integration tests:** Component interaction
-3. **Smoke tests:** Quick end-to-end on small data
+Existing test infrastructure from `docs/plans/UNIT_TESTING_PLAN.md` is still relevant for:
+- Eval tests (parser, grader, math_verifier)
+- Resampling tests
+- Particle filter tests
+- Temperature ladder tests
 
-**Test Files Structure:**
-```
-trex/tests/
-├── test_eval/
-│   ├── test_parser.py
-│   ├── test_grader.py
-│   └── test_math_verifier.py
-├── test_baselines/
-│   └── test_smc_config.py
-├── test_models/
-│   └── test_reward_model.py
-├── test_smc/
-│   ├── test_resampling.py
-│   ├── test_particle_filter.py
-│   ├── test_twisted_smc.py
-│   └── test_llm_particle_filter.py
-├── test_tempering/
-│   ├── test_temperature_ladder.py
-│   └── test_exchange.py
-├── test_utils/
-│   └── test_efficiency_tracker.py
-└── test_transport/
-    └── __init__.py
-```
-
----
-
-## Models to Evaluate
-
-All baselines and T-REX methods should be evaluated on the following models:
-
-| Model | Size | Notes |
-|-------|------|-------|
-| `Qwen/Qwen2.5-7B` | 7B | Primary model for development |
-| `google/gemma-7b` | 7B | Secondary evaluation model |
-
-**Note:** Additional models may be added based on compute availability and research needs.
-
----
-
-## Experiment Tracking
-
-All experiments should be logged to WandB with:
-- Method name (bon, grpo, ppo, smc, tsmc, trex)
-- Model name (qwen2.5-7b, gemma-7b)
-- Dataset
-- Key hyperparameters
-- Efficiency metrics (samples to X% accuracy)
-
-See `EXPERIMENTS.md` for experiment results and analysis.
+New tests needed:
+- Single-chain SMC weight computation (log-space)
+- Mixture proposal mechanism
+- Hot injection reweighting
+- ESS computation and threshold triggering
+- End-to-end multi-chain smoke test

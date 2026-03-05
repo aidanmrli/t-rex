@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 - `openrlhf/`: Core RLHF framework (fork of OpenRLHF). CLI entry points live in `openrlhf/cli/`; model/trainer code in `openrlhf/models/` and `openrlhf/trainer/`.
-- `trex/`: T-REX research code. Key areas include `trex/baselines/`, `trex/eval/`, `trex/models/`, `trex/tempering/`, `trex/smc/`, and `trex/utils/`.
+- `trex/`: T-REX research code. Key areas include `trex/baselines/`, `trex/eval/`, `trex/smc/`, and `trex/utils/`.
 - `trex/tests/`: pytest suite (directories prefixed with `test_`).
-- `docs/`, `examples/`, `dockerfile/`: documentation, example scripts, and container files.
+- `docs/`: documentation — `HIGH_LEVEL_CONTEXT.md` (math spec), `EXPERIMENTS.md`, `plans/` (implementation plans), `archive/2026-feb/` (old approach docs).
 - `results/`, `slurm/`, `wandb/`: scratch symlinks for outputs and logs (HPC environment).
 
 ## Build, Test, and Development Commands
@@ -30,6 +30,7 @@
 - Order of content: (1) results/metrics, (2) interpretation in the experiment context.
 - Explicitly record: what command was run, whether anything went wrong (bugs, invalid runs, anomalies), and what the results imply for the project's next steps.
 - Maintain a top-of-file "Current Experiment State (Summary)" section that lists the problems being solved, any solutions found, what is currently being tried, and a clearly labeled outstanding problem.
+- The project pivoted in March 2026 from a Twisted SMC + Block-Gibbs transport approach to a simpler multi-chain SMC with mixture proposals. Old docs are archived in `docs/archive/2026-feb/`.
 
 ## Commit & Pull Request Guidelines
 - Follow observed conventions: short imperative subjects, often Conventional Commits like `feat:`, `fix:`, `docs:`, with optional scopes (`fix(smc): ...`).

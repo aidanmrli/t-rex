@@ -4,17 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-T-REX (Twisted Replica Exchange for Bootstrapping Reasoning) is a research project extending [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) for advanced RLHF techniques focused on mathematical reasoning. The project implements probabilistic inference methods to solve the "narrow passage" problem in constrained language generation.
+T-REX (Twisted Replica Exchange) is a research project implementing probabilistic inference methods for mathematical reasoning. The core algorithm runs K parallel SMC chains at different temperatures with inter-chain communication via mixture proposals, avoiding the vanishing acceptance rates of traditional Metropolis-Hastings swaps.
 
 **Key concepts:**
-- **Parallel Tempering:** Multiple chains at different temperatures (β=0 hot/exploration → β=1 cold/exploitation)
-- **Twisted SMC:** Value function-guided particle filtering for efficient search
-- **Non-Reversible Transport:** Block-Gibbs editing to bridge creative and rigorous distributions
+- **Multi-chain SMC:** K independent particle filter chains at temperatures β_1=0 (hot/prior) to β_K=1 (cold/posterior)
+- **Mixture Proposals:** Cold chains absorb particles from adjacent hot chains via Bernoulli coin flip (probability λ), with importance reweighting R(x)^{Δβ} — "zero-rejection" communication
+- **PRM-guided Reweighting:** Incremental weights w_t = (R(x_{1:t}) / R(x_{1:t-1}))^β using Process Reward Model scores
 
 ## Context Management
-- See `HIGH_LEVEL_CONTEXT.md` for mathematical specification and algorithm details
-- See `IMPLEMENTATION_PLAN.md` for details of the development roadmap with status. We will make more detailed plans for each item in this plan in separate Markdown files before any implementation is done.
-- See `EXPERIMENTS.md` to keep track of all experiments that have been done. This should contain all details about what experiments have been ran, what hypothesis we are testing with each experiment, and what the results are.
+- See `docs/HIGH_LEVEL_CONTEXT.md` for mathematical specification and algorithm details
+- See `docs/plans/PROJECT_HIGH_LEVEL_PLAN.md` for details of the development roadmap with status. We will make more detailed plans for each item in this plan in separate Markdown files before any implementation is done.
+- See `docs/EXPERIMENTS.md` to keep track of all experiments that have been done. This should contain all details about what experiments have been ran, what hypothesis we are testing with each experiment, and what the results are.
+- Old docs from the Feb 2026 approach (Twisted SMC + Block-Gibbs transport) are archived in `docs/archive/2026-feb/`.
 
 Update these markdown contexts after carrying out actions.
 
@@ -27,14 +28,18 @@ t-rex/
 │   ├── trainer/        # SFTTrainer, RMTrainer, PPOTrainer implementations
 │   └── models/         # Actor, Critic, Reward model wrappers
 ├── trex/               # T-REX research code
-│   ├── baselines/      # Best-of-N, GRPO reward functions
+│   ├── baselines/      # Best-of-N, GRPO, SMC steering baselines
 │   ├── eval/           # MathVerifier, answer parsing, grading
 │   ├── data/           # GSM8K, MATH, MATH-500 datasets (JSONL)
+│   ├── smc/            # SMC core: particle filter, resampling
 │   ├── scripts/        # SLURM job scripts with auto-requeue
 │   └── utils/          # Efficiency tracking utilities
-├── HIGH_LEVEL_CONTEXT.md   # Mathematical specification (read for algorithm details)
-├── IMPLEMENTATION_PLAN.md  # Development roadmap with status
-└── EXPERIMENTS.md          # Experiment tracking
+├── docs/
+│   ├── HIGH_LEVEL_CONTEXT.md   # Mathematical specification (read for algorithm details)
+│   ├── EXPERIMENTS.md          # Experiment tracking
+│   ├── plans/                  # Detailed implementation plans
+│   └── archive/2026-feb/       # Archived docs from old approach
+└── CLAUDE.md
 ```
 
 ## Development Commands

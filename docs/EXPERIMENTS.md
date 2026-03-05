@@ -6,51 +6,29 @@
 
 ---
 
-## Current Experiment State (Summary) (2026-02-05)
+## Current Experiment State (Summary) (2026-03-04)
 
-**Solved so far:**
-- Established BoN, GRPO-eval, and PPO-eval baselines with reproducible outputs.
-- Confirmed large search headroom: BoN MATH-500 `pass@1=53.3%` to `pass@32=81.6%`.
-- Found viable token-resampling regime: K=256 reaches `87.68%` on GSM8K Platinum.
+**Project pivot (2026-03-04):** The algorithm has changed from Twisted SMC + Block-Gibbs transport to multi-chain SMC with mixture proposals ("zero-rejection" inter-chain communication). See `docs/HIGH_LEVEL_CONTEXT.md` for the new spec. Old approach docs are in `docs/archive/2026-feb/`.
 
-**Outstanding problems / hypotheses:**
-- Step-based SMC baseline is still invalid due to truncation/template-answer leakage.
-- Hypothesis to test: finish-reason-aware step handling now allows full completions and valid `\boxed{...}` extraction.
-- Hypothesis to test: high-K (>=256) or adaptive resampling preserves completion without leakage under stricter extraction.
+**Completed baselines (still valid):**
+- BoN on MATH-500: `pass@1=53.3%`, `pass@32=81.6%` (large search headroom confirmed)
+- GRPO-eval on GSM8K: `pass@1=38.6%`, `pass@16=98.3%`
+- PPO-eval on GSM8K: `pass@1=25.2%`, `pass@16=96.6%`
+- Token-resampling sweep: K=256 reaches `87.68%` on GSM8K Platinum (but with template-answer leakage issues at smaller K)
+- PRM800K SFT checkpoints exist: `job_154122` (H200x8) and `job_154126` (H100x4)
 
-**What to do now:**
-- Re-run step-based SMC from a cleared checkpoint and verify leakage is fixed.
-- Re-run token-resampling confirmation at K>=256 (and optionally adaptive ESS) with the same evaluation protocol.
-- Compare valid SMC numbers directly against BoN/GRPO/PPO.
-- Start evaluation runs for the new PRM800K SFT checkpoints (`job_154122`, `job_154126`) on GSM8K/MATH-500.
+**What to do now (new algorithm):**
+1. Implement single-chain SMC with PRM-based incremental reweighting (Stage 3 of new spec)
+2. Implement multi-chain SMC with mixture proposals (Stage 4 — core T-REX novelty)
+3. Run single-chain SMC vs BoN comparison at equal N
+4. Run T-REX vs single-chain SMC comparison
+5. Run λ=0 ablation to validate mixture proposals
 
-**Future work:**
-- Move from baseline SMC to TSMC/T-REX comparisons once step-based SMC is valid.
-- Add compute-efficiency comparisons (accuracy vs sample/token budget) across BoN, RL baselines, and SMC variants.
-
-**Latest cluster submissions (2026-02-05):**
-- Job `153914`: step-based SMC baseline re-run submitted with cleared checkpoint.
-- Job `153915`: token sweep submitted with `K_VALUES="256 384 512"` and `TOTAL_TOKEN_BUDGET=2048`.
-- Job `153916`: token sweep submitted with `K_VALUES="256 384 512"`, `TOTAL_TOKEN_BUDGET=2048`, `RESAMPLING_STRATEGY=ess_adaptive`.
-- Submission hiccup: initial `Permission denied` on `run_smc_token_sweep_array.sh`; fixed by `chmod +x`.
-- Job `154122`: PRM800K SFT (`run_sft_prm800k_h200.sh`) completed on `tg10502` (H200x8, `00:47:15`, `ExitCode=0:0`).
-- Job `154126`: PRM800K SFT (`run_sft_prm800k_h100.sh`) completed on `tg11101` (H100x4, `01:28:23`, `ExitCode=0:0`).
-- Job `154468`: PRM800K SFT checkpoint-selection eval submitted via `sbatch trex/scripts/tamia/run_eval_prm800k_sft_checkpoints.sh`.
-
-**Outputs to check when jobs finish:**
-- Job `153914` logs: `/scratch/l/liaidan/t-rex/slurm/smc_153914.out` and `/scratch/l/liaidan/t-rex/slurm/smc_153914.err`
-- Job `153914` results: `/scratch/l/liaidan/t-rex/results/smc_baseline/summary.json` and `/scratch/l/liaidan/t-rex/results/smc_baseline/generations/generations.jsonl`
-- Job `153915` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153915_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153915_*.err`
-- Job `153915` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153915/k512/summary.json`
-- Job `153916` logs: `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.out` and `/scratch/l/liaidan/t-rex/slurm/smc_token_sweep_153916_*.err`
-- Job `153916` results: `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k256/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k384/summary.json`, `/scratch/l/liaidan/t-rex/results/smc_token_sweep/job_153916/k512/summary.json`
-- Job `154468` logs: `/scratch/l/liaidan/t-rex/slurm/eval_prm800k_sft_154468.out` and `/scratch/l/liaidan/t-rex/slurm/eval_prm800k_sft_154468.err`
-- Job `154468` results root: `/scratch/l/liaidan/t-rex/results/eval_prm800k_sft/154468/`
-- Job `154468` expected summaries:
-  - `/scratch/l/liaidan/t-rex/results/eval_prm800k_sft/154468/job_154122/gsm8k_n16/summary.json`
-  - `/scratch/l/liaidan/t-rex/results/eval_prm800k_sft/154468/job_154122/math_n32/summary.json`
-  - `/scratch/l/liaidan/t-rex/results/eval_prm800k_sft/154468/job_154126/gsm8k_n16/summary.json`
-  - `/scratch/l/liaidan/t-rex/results/eval_prm800k_sft/154468/job_154126/math_n32/summary.json`
+**Key hypotheses to test:**
+- Multi-chain SMC with mixture proposals (T-REX) should outperform single-chain SMC at equal N
+- T-REX at N=64 should match or exceed BoN at N=256 (4× sample efficiency)
+- Communication (λ>0) should outperform no communication (λ=0), validating mixture proposals
+- Cold chain should produce more diverse correct solutions than single-chain SMC
 
 ---
 
@@ -707,18 +685,18 @@ sbatch trex/scripts/tamia/run_smc_token_sweep.sh
 
 ---
 
-## Interpretation & Implications (2026-02-04)
+## Interpretation & Implications (2026-03-04)
 
-**What the new results say:**
+**What the baseline results say:**
 - **GRPO evaluation:** best_temp=1.0 with pass@1=38.6% and pass@16=98.3% implies a very large remaining search gap (~59.7%). Training improves the model but still leaves substantial headroom for inference-time search.
 - **PPO evaluation:** pass@1=25.2% and pass@16=96.6% trails GRPO across k, suggesting GRPO is the stronger RL baseline to beat for T-REX.
 - **Token-resampling sweep:** a sharp jump from K=128 (17.5%) to K=256 (87.7%) indicates frequent resampling can prevent solutions from finishing. Larger chunk sizes (or adaptive K) are necessary for SMC to be viable.
-- **Step-based SMC baseline:** still invalid due to premature truncation and template-answer leakage, so it cannot yet be compared to BoN or GRPO.
 
-**Implications for next steps:**
-- Prioritize stabilizing termination/stop handling for step-based SMC; the baseline is currently unusable for comparisons.
-- Focus SMC development on token-resampling with K>=256 (or adaptive K) and validate whether the high K=256 accuracy holds under stricter answer extraction.
-- Use GRPO as the primary RL baseline for comparisons; PPO appears weaker in both pass@1 and pass@16.
+**Implications for the new algorithm:**
+- The large search gap (pass@16 - pass@1 ≈ 60%) confirms significant room for inference-time compute scaling, which T-REX targets.
+- Use GRPO as the primary RL baseline for comparisons; PPO appears weaker.
+- The new T-REX algorithm (multi-chain SMC with mixture proposals) should address the step-based SMC issues by using PRM incremental reweighting rather than template-dependent step boundaries.
+- The token-resampling results suggest that per-reasoning-step resampling (which the new algorithm uses) is more natural than fixed-token-count resampling.
 
 ---
 
@@ -769,9 +747,10 @@ This reveals:
 | BoN pass@N vs pass@1 | Search opportunity in base model |
 | GRPO pass@1 vs Base pass@1 | Training-time improvement |
 | GRPO pass@N vs Base pass@N | Does training help search? |
-| (Future) SMC pass@1 vs BoN pass@N | Does SMC approach BoN oracle? |
-| (Future) TSMC vs SMC | Value of learned twist function |
-| (Future) T-REX vs TSMC | Value of parallel tempering |
+| Single-chain SMC vs BoN | Does mid-generation resampling beat post-hoc selection? |
+| T-REX (λ>0) vs single-chain SMC | Value of multi-chain mixture proposals |
+| T-REX (λ>0) vs T-REX (λ=0) | Value of inter-chain communication |
+| T-REX at N=64 vs BoN at N=256 | 4× sample efficiency target |
 
 ### Efficiency Metrics
 
@@ -782,9 +761,9 @@ Sample Efficiency = samples_to_X%_accuracy
 ```
 
 This metric will be critical for comparing:
-- **Inference-time methods:** SMC needs K samples to reach accuracy A
+- **Inference-time methods:** SMC needs K×N samples per step to reach accuracy A
 - **Training methods:** GRPO needs M samples to reach the same accuracy A
-- **T-REX:** Combines both—what's the optimal allocation of compute?
+- **T-REX:** Multi-chain SMC with K chains × N particles — what's the accuracy vs total compute?
 
 ---
 

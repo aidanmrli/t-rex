@@ -1,338 +1,516 @@
-# System Context & Mathematical Specification for T-REX: Twisted Replica Exchange for Bootstrapping Reasoning
+# T-REX: Implementation Specification
 
-**Last Updated:** 2026-02-05
+**Last Updated:** 2026-03-04
 
-## 1. Abstract Framework
+## Purpose
 
-T-REX is a probabilistic inference framework designed to solve the "Narrow Passage" problem in constrained language generation (e.g., math reasoning, code generation). It decouples the reasoning process into three distinct, interacting mechanisms:
+This document is a **precise mathematical and algorithmic specification** for implementing the T-REX (Twisted Replica Exchange) framework. It is intended to be consumed by downstream planning and coding agents. Every formula, index convention, and data structure is defined explicitly so that code can be written to match the math without ambiguity.
 
-- **Relaxation (Exploration):** A thermodynamic search engine that maintains parallel chains at high temperatures. These chains relax the strict constraints of the target distribution, allowing the model to "dream" and discover diverse semantic structures ("Proto-solutions") that would be rejected by standard decoding.
+---
 
-- **Transport (Discrete Editor):** A non-reversible bridge that projects high-temperature samples onto the constrained manifold. By performing local, valid-by-construction repairs (via Block-Gibbs sampling), it enables the efficient transfer of "hot" ideas into "cold" valid solutions, bypassing the high-energy barriers of the problem landscape.
+## 1. Notation and Definitions
 
-- **Guidance (Twisted Distillation):** A feedback loop that distills the successful trajectories found by the transport mechanism into a global value function (Twist). This biases future proposals, progressively converting the expensive search process into efficient intuition (System 1).
+| Symbol | Type | Definition |
+|---|---|---|
+| `x_0` | token sequence | The input prompt / problem statement. |
+| `x_{1:T}` | token sequence | The generated solution, produced autoregressively. `x_t` is the token (or reasoning step) at position `t`. |
+| `P_θ(x_t \| x_{1:t-1})` | probability | The base LLM's autoregressive next-token distribution, conditioned on all prior tokens. |
+| `P_θ(x_{1:t})` | probability | Joint probability of the partial sequence under the base LLM: `∏_{s=1}^{t} P_θ(x_s \| x_{1:s-1})`. |
+| `R(x_{1:t})` | float ∈ (0, 1] | Process Reward Model (PRM) score for the partial sequence `x_{1:t}`. Evaluates logical validity up to step `t`. Must be **strictly positive** — never exactly 0. |
+| `K` | int ≥ 2 | Number of temperature chains (replicas). |
+| `β_k` for `k ∈ {1, …, K}` | float ∈ [0, 1] | Inverse temperature for chain `k`. **Convention**: `β_1 = 0` (hottest, pure prior) and `β_K = 1` (coldest, full posterior). The schedule is monotonically increasing: `0 = β_1 < β_2 < … < β_K = 1`. |
+| `N` | int | Number of particles per chain. |
+| `T` | int | Maximum sequence length (number of generation steps). |
+| `λ` | float ∈ (0, 1) | Mixing weight for hot-chain injection into cold chain proposals. Recommended default: `λ = 0.1`. |
 
-## 2. Mathematical Formulation
+---
 
-### 2.1. The Target Distribution
+## 2. Target Distribution
 
-We formulate language generation as sampling from an unnormalized target distribution $\sigma(x)$ over token sequences $x = (x_1, \dots, x_T)$:
+The goal is to sample from the posterior:
 
-$$\sigma(x) \propto p_0(x) \cdot \phi(x)$$
+```
+π(x_{1:T}) = (1 / Z_π) * P_θ(x_{1:T}) * R(x_{1:T})
+```
 
-- $p_0(x) = \prod_{t=1}^T p_\theta(x_t | x_{<t})$: The pre-trained Base LLM (the prior).
+where `Z_π = Σ_{x_{1:T}} P_θ(x_{1:T}) * R(x_{1:T})` is the intractable normalizing constant.
 
-- $\phi(x) \in [0, 1]$: The non-local potential function (constraint/verifier). For binary constraints, $\phi(x) = \mathbb{I}(x \text{ is valid})$.
+### Tempered targets
 
-- $\mathcal{Z}$: The intractable normalization constant (partition function).
+Each chain `k` has its own tempered target at step `t`:
 
-### 2.2. Parallel Tempering (The Landscape)
+```
+π̃_t^k(x_{1:t}) = P_θ(x_{1:t}) * R(x_{1:t})^{β_k}
+```
 
-We maintain $K$ parallel chains targeting a sequence of annealed distributions $\pi_k(x)$ defined by inverse temperatures $0 = \beta_0 < \beta_1 < \dots < \beta_K = 1$:
+**Key consequences:**
+- **Chain k=1 (β_1=0):** `π̃_t^1(x_{1:t}) = P_θ(x_{1:t})`. The hottest chain samples from the pure base LLM prior with **no reward influence**.
+- **Chain k=K (β_K=1):** `π̃_t^K(x_{1:t}) = P_θ(x_{1:t}) * R(x_{1:t})`. The coldest chain samples from the full posterior.
+- **Intermediate chains** interpolate between prior and posterior.
 
-$$\pi_k(x) \propto p_0(x) \cdot \phi(x)^{\beta_k}$$
+---
 
-- $\beta \approx 0$ (Hot): $\pi_0(x) \approx p_0(x)$. Pure exploration driven by the base model's priors. High diversity, low validity.
+## 3. Core Algorithm: SMC per Chain
 
-- $\beta = 1$ (Cold): $\pi_K(x) \propto p_0(x)\phi(x)$. Strict sampling from the posterior. High validity, low diversity.
+Each chain `k` runs an independent SMC sampler with `N` particles. At each generation step `t = 1, 2, …, T`, each chain performs the **Propagate → Reweight → Resample** cycle.
 
-### 2.3. Non-Reversible Parallel Tempering (Ballistic Flow)
+### 3.1 Propagate
 
-**The Random Walk Problem:** In standard parallel tempering, swap pairs are chosen at random. This causes particles to perform a random walk through the temperature ladder, requiring $O(K^2)$ steps for a sample to propagate from the prior ($\beta_0$) to the posterior ($\beta_K$).
+For chain `k`, for each particle `i ∈ {1, …, N}`:
 
-**The Solution:** Following Syed et al. (2022), we use a **deterministic, alternating schedule** instead of random swap selection:
+- Sample the next token: `x_t^{k,(i)} ~ P_θ(· | x_{1:t-1}^{k,(i)})`
 
-$$\mathcal{S}_{odd} = \{(1,2), (3,4), (5,6), \dots\}$$
-$$\mathcal{S}_{even} = \{(2,3), (4,5), (6,7), \dots\}$$
+This uses the **base LLM** as the proposal distribution. The proposal is the same regardless of chain temperature — temperature only affects the *reweighting*.
 
-At odd timesteps, we attempt swaps between pairs in $\mathcal{S}_{odd}$. At even timesteps, we attempt swaps between pairs in $\mathcal{S}_{even}$.
+### 3.2 Reweight
 
-**Ballistic Flow:** By toggling between these sets, we induce a directed, ballistic flow through the temperature ladder. A successful particle propagates from the prior to the posterior in $O(K)$ steps—significantly faster than the diffusive $O(K^2)$ of standard PT.
+Compute the **incremental importance weight** for particle `i` in chain `k`:
 
-**Intuition:** Think of it like a bucket brigade vs. random passing. In standard PT, a bucket (sample) gets passed randomly left or right. In non-reversible PT, buckets consistently move in one direction, creating an efficient pipeline.
+```
+w_t^{k,(i)} = π̃_t^k(x_{1:t}^{k,(i)}) / [π̃_{t-1}^k(x_{1:t-1}^{k,(i)}) * P_θ(x_t^{k,(i)} | x_{1:t-1}^{k,(i)})]
+```
 
-### 2.4. The Twist Function (Guidance)
+Expanding using the tempered target definition:
 
-To guide the base model toward high-value regions efficiently, we introduce a Twist Function $\psi_\gamma(x_{1:t})$. Theoretically, the optimal twist function $\psi^*$ corresponds to the expected future potential of the sequence:
+```
+w_t^{k,(i)} = [P_θ(x_{1:t}^{k,(i)}) * R(x_{1:t}^{k,(i)})^{β_k}] / [P_θ(x_{1:t-1}^{k,(i)}) * R(x_{1:t-1}^{k,(i)})^{β_k} * P_θ(x_t^{k,(i)} | x_{1:t-1}^{k,(i)})]
+```
 
-$$\psi^*(x_{1:t}) = \mathbb{E}_{p_0(x_{t+1:T}|x_{1:t})} [\phi(x_{1:T})]$$
+The `P_θ` terms cancel because `P_θ(x_{1:t}) = P_θ(x_{1:t-1}) * P_θ(x_t | x_{1:t-1})`:
 
-In implementation, we approximate this using a single global Value Head $V_\gamma(h_t)$ (where $h_t$ is the LLM hidden state at step $t$). The Twisted Proposal Distribution $q_t$ is defined as:
+```
+w_t^{k,(i)} = [R(x_{1:t}^{k,(i)}) / R(x_{1:t-1}^{k,(i)})]^{β_k}
+```
 
-$$q_t(x_t | x_{<t}) \propto p_0(x_t | x_{<t}) \cdot \psi_\gamma(x_{1:t})$$
+**This is the key formula for implementation.** The weight is the **ratio of consecutive PRM scores, raised to the inverse temperature**.
 
-This tilts the next-token probability mass toward tokens that lead to high-value futures.
+**Special cases:**
+- **Hot chain (β_1=0):** `w_t^{1,(i)} = 1` for all particles. No reweighting — pure prior sampling.
+- **Cold chain (β_K=1):** `w_t^{K,(i)} = R(x_{1:t}) / R(x_{1:t-1})`. Full reward ratio.
 
-## 3. The Transport Mechanism: Adaptive Block-Gibbs
+**At t=1 (first step):** Define `R(x_{1:0}) = 1` (empty sequence has reward 1), so `w_1^{k,(i)} = R(x_1^{k,(i)})^{β_k}`.
 
-Standard Replica Exchange fails in text domains because the overlap between valid and invalid distributions is negligible. T-REX solves this via an Editor that performs local repairs to bridge the gap.
+### 3.3 Resample
 
-### 3.1. The Editor Kernel
+Normalize the weights across particles within chain `k`:
 
-The editor defines a transition kernel $T(x'|x)$ consisting of:
+```
+W_t^{k,(i)} = w_t^{k,(i)} / Σ_{j=1}^{N} w_t^{k,(j)}
+```
 
-- **Critic ($C_\omega$):** Selects a mask $m \in \{0, 1\}^T$ identifying error tokens.
+Resample `N` particles from the categorical distribution `Categorical(W_t^{k,(1)}, …, W_t^{k,(N)})`. Particles with high normalized weight are duplicated; particles with low weight are eliminated.
 
-- **Proposer:** Resamples masked tokens from the base prior $p_0$ conditioned on the unmasked context.
+**Resampling strategy:** Use **systematic resampling** (lower variance than multinomial). Optionally, resample only when the Effective Sample Size (ESS) drops below a threshold:
 
-$$x' \sim p_0(x_{mask} | x_{\neg mask})$$
+```
+ESS_t^k = 1 / Σ_{i=1}^{N} (W_t^{k,(i)})^2
+```
 
-### 3.2. Acceptance Ratio (The "Free Lunch")
+Resample when `ESS_t^k < N / 2`. Otherwise, carry forward unnormalized weights.
 
-When proposing a move from a current state $x$ to a candidate $x'$ (e.g., swapping a repaired hot sample into a cold chain), the Metropolis-Hastings acceptance ratio $\alpha$ is:
+---
 
-$$\alpha = \min \left(1, \frac{\pi_{target}(x')}{\pi_{target}(x)} \frac{q(x|x')}{q(x'|x)} \right)$$
+## 4. Inter-Chain Communication: Mixture Proposals
 
-Substituting the target definition $\pi(x) \propto p_0(x)\phi(x)^\beta$ and the proposal probabilities:
+This is the core novelty of T-REX. Instead of Metropolis-Hastings swap moves (which have vanishing acceptance rates in high dimensions), cold chains **absorb** particles from adjacent hot chains through a mixture proposal.
 
-**Ratio of Targets:**
+### 4.1 The Mixture Proposal Distribution
 
-$$\frac{\pi(x')}{\pi(x)} = \frac{p_0(x') \phi(x')^\beta}{p_0(x) \phi(x)^\beta}$$
+At step `t`, for chain `k+1` (the colder chain), each of its `N` particles is proposed from a mixture:
 
-**Ratio of Proposals:**
-Since $q(x'|x) = p_0(x'_{mask} | x_{\neg mask})$ and $p_0(x) = p_0(x_{\neg mask})p_0(x_{mask}|x_{\neg mask})$, the ratio simplifies nicely because the unmasked context probability $p_0(x_{\neg mask})$ is identical for both $x$ and $x'$:
+```
+q_t^{k+1}(x_{1:t}) = (1 - λ) * [Local Extension] + λ * [Hot Injection]
+```
 
-$$\frac{q(x|x')}{q(x'|x)} = \frac{p_0(x_{mask} | x_{\neg mask})}{p_0(x'_{mask} | x_{\neg mask})} = \frac{p_0(x)/p_0(x_{\neg mask})}{p_0(x')/p_0(x_{\neg mask})} = \frac{p_0(x)}{p_0(x')}$$
+**For each particle `i` independently:**
 
-**Crucial Cancellation:**
-Multiplying the terms, the expensive likelihoods $p_0(x)$ and $p_0(x')$ cancel out perfectly:
+1. **Draw a Bernoulli coin flip:** `z_i ~ Bernoulli(λ)`
+2. **If `z_i = 0` (Local Extension, probability `1 - λ`):**
+   - Extend from cold chain's own previous particle: `x_t^{k+1,(i)} ~ P_θ(· | x_{1:t-1}^{k+1,(i)})`
+   - The particle history `x_{1:t-1}` comes from chain `k+1`'s own particle pool (after resampling at step `t-1`).
+3. **If `z_i = 1` (Hot Injection, probability `λ`):**
+   - Sample a **full trajectory** `x_{1:t}` uniformly from chain `k`'s current particle population: `x_{1:t} ~ η̂_t^k(x_{1:t})`
+   - where `η̂_t^k(x_{1:t}) = (1/N) Σ_{j=1}^{N} δ_{x_{1:t}^{k,(j)}}(x_{1:t})` is the empirical measure of the hot chain's particles.
+   - **This replaces the entire particle trajectory**, not just the current token. The cold chain receives a complete sequence from the hot chain.
+
+### 4.2 Importance Weights for Mixture Proposals
+
+The weight depends on which component generated the particle:
+
+**Local Extension weight (same as standard SMC):**
+
+```
+w_{t,local}^{(i)} = [R(x_{1:t}^{(i)}) / R(x_{1:t-1}^{(i)})]^{β_{k+1}}
+```
+
+**Hot Injection weight:**
+
+The injected particle was effectively drawn from `π̃_t^k ∝ P_θ · R^{β_k}` (the hot chain's target). It needs to be reweighted to the cold chain's target `π̃_t^{k+1} ∝ P_θ · R^{β_{k+1}}`:
+
+```
+w_{t,inject}^{(i)} = π̃_t^{k+1}(x_{1:t}^{(i)}) / π̃_t^k(x_{1:t}^{(i)})
+                    = [P_θ(x_{1:t}) * R(x_{1:t})^{β_{k+1}}] / [P_θ(x_{1:t}) * R(x_{1:t})^{β_k}]
+                    = R(x_{1:t}^{(i)})^{β_{k+1} - β_k}
+```
+
+**Key property:** Since `R(·) ∈ (0, 1]` and `β_{k+1} > β_k`, the exponent `β_{k+1} - β_k > 0`, so:
+- If `R` is high (close to 1): the weight is close to 1 → particle survives.
+- If `R` is low (close to 0): the weight is close to 0 → particle is washed out during resampling.
+
+**This is "zero-rejection" communication.** Every injected particle enters the pool and gets reweighted. No Metropolis-Hastings accept/reject step is needed.
+
+### 4.3 Communication Direction
+
+Communication flows **unidirectionally from hot to cold**: chain `k` feeds into chain `k+1`.
+
+- Chain 1 (hottest) has no injection source — it runs pure base LLM SMC.
+- Chain 2 receives injections from chain 1.
+- Chain 3 receives injections from chain 2.
+- …
+- Chain K (coldest) receives injections from chain K-1.
+
+This means chains can run **asynchronously**: hot chains can run ahead of cold chains. A cold chain at step `t` only needs the hot chain's particles at step `t` (which the hot chain has already computed).
+
+---
+
+## 5. Full Algorithm Pseudocode
+
+```
+INPUTS:
+  - x_0: prompt
+  - P_θ: base LLM
+  - R: Process Reward Model, R(x_{1:t}) → (0, 1]
+  - K: number of chains
+  - N: number of particles per chain
+  - T: max generation steps
+  - β_{1:K}: temperature schedule, β_1=0, β_K=1
+  - λ: mixing weight (default 0.1)
+
+INITIALIZE:
+  For each chain k = 1, …, K:
+    For each particle i = 1, …, N:
+      x_{1:0}^{k,(i)} = x_0   # all particles start with the prompt
+      R_prev^{k,(i)} = 1.0     # R of empty sequence
+
+FOR t = 1 TO T:
+
+  # --- PHASE 1: Propagate & Reweight each chain independently ---
+  For chain k = 1 to K:
+    For particle i = 1 to N:
+      # Propagate: sample next token from base LLM
+      x_t^{k,(i)} ~ P_θ(· | x_{1:t-1}^{k,(i)})
+      
+      # Compute PRM score for extended sequence
+      R_curr^{k,(i)} = R(x_{1:t}^{k,(i)})
+      
+      # Compute incremental weight
+      w^{k,(i)} = (R_curr^{k,(i)} / R_prev^{k,(i)})^{β_k}
+
+  # --- PHASE 2: Inter-chain communication (hot → cold injection) ---
+  For chain k = 2 to K:   # chain 1 has no source
+    For particle i = 1 to N:
+      z_i ~ Bernoulli(λ)
+      If z_i = 1:  # Hot Injection
+        j ~ Uniform({1, …, N})   # pick random particle from chain k-1
+        # Replace particle i's ENTIRE trajectory with chain (k-1)'s particle j
+        x_{1:t}^{k,(i)} = x_{1:t}^{k-1,(j)}
+        R_curr^{k,(i)} = R(x_{1:t}^{k,(i)})  # may reuse cached value
+        
+        # Recompute weight for injected particle
+        w^{k,(i)} = R_curr^{k,(i)}^{β_k - β_{k-1}}
+
+  # --- PHASE 3: Resample within each chain ---
+  For chain k = 1 to K:
+    Normalize weights: W^{k,(i)} = w^{k,(i)} / Σ_j w^{k,(j)}
+    Compute ESS_k = 1 / Σ_i (W^{k,(i)})^2
+    
+    If ESS_k < N / 2:
+      ancestors = SystematicResample(W^{k,(1:N)})
+      For i = 1 to N:
+        x_{1:t}^{k,(i)} = x_{1:t}^{k,(ancestors[i])}
+        R_prev^{k,(i)} = R_curr^{k,(ancestors[i])}
+        w^{k,(i)} = 1.0   # reset weights after resampling
+    Else:
+      For i = 1 to N:
+        R_prev^{k,(i)} = R_curr^{k,(i)}
+        # carry forward unnormalized weights (accumulate)
+
+OUTPUT:
+  Return cold chain's (k=K) final particles {x_{1:T}^{K,(i)}}_{i=1}^{N}
+  with normalized weights {W_T^{K,(i)}}
+  
+  Normalizing constant estimate:
+    Z_hat = Π_{t=1}^{T} [(1/N) Σ_{i=1}^{N} w_t^{K,(i)}]
+```
+
+---
+
+## 6. Implementation Stages and Success Criteria
+
+### Stage 1: Base LLM Inference Wrapper
+
+**Goal:** Build a module that takes a prompt and a partial sequence and returns next-token log-probabilities and samples.
+
+**What to implement:**
+- `sample_next_token(model, x_{1:t-1}) → x_t` — samples from `P_θ(· | x_{1:t-1})`
+- `log_prob(model, x_{1:t-1}, x_t) → float` — returns `log P_θ(x_t | x_{1:t-1})`
+- Batched versions of both for `N` particles simultaneously.
+
+**Success criteria:**
+- Sampling produces valid tokens from the model's vocabulary.
+- Log-probs match the model's actual distribution (verify by comparing against HuggingFace `model.generate` or equivalent).
+- Batched inference handles `N` particles efficiently on GPU without OOM for target `N` (e.g., N=64 or N=128).
+
+### Stage 2: Process Reward Model (PRM) Integration
+
+**Goal:** Integrate a PRM that scores partial sequences.
+
+**What to implement:**
+- `score_prm(prm_model, x_{1:t}) → float ∈ (0, 1]` — returns the PRM score for a partial sequence.
+- Must handle **partial** sequences (not just complete solutions).
+- Clamp outputs: if raw PRM output is ≤ 0, clamp to a small epsilon (e.g., `1e-8`) to maintain strict positivity.
+- Batched scoring for `N` particles.
+
+**Success criteria:**
+- PRM scores are in `(0, 1]` for all inputs.
+- Scores correlate with reasoning quality: correct partial solutions score higher than incorrect ones on a held-out set.
+- Scoring `N` partial sequences is fast enough to not bottleneck the SMC loop (profile and report latency).
+
+### Stage 3: Single-Chain SMC Sampler
+
+**Goal:** Implement the basic SMC loop (Section 3) for a single chain with fixed temperature β.
+
+**What to implement:**
+- The Propagate → Reweight → Resample loop.
+- Incremental weight computation: `w_t^{(i)} = (R(x_{1:t}^{(i)}) / R(x_{1:t-1}^{(i)}))^β`.
+- Systematic resampling with ESS-based triggering.
+- Normalizing constant estimation: `Z_hat = Π_t [(1/N) Σ_i w_t^{(i)}]` (accumulate as log sum to avoid numerical underflow).
+- Particle storage: maintain full trajectories `x_{1:t}^{(i)}` and cached PRM scores.
+
+**Success criteria:**
+- **Sanity check at β=0:** All weights should be exactly 1.0. Output should be indistinguishable from i.i.d. base model samples. Verify by comparing token distribution statistics.
+- **Sanity check at β=1:** Particles should concentrate on higher-reward trajectories compared to β=0.
+- **ESS tracking:** Log ESS at each step. ESS should not collapse to 1 (if it does, N is too small or the PRM is too sharp).
+- **Z_hat estimation:** For a problem with known difficulty, the log normalizing constant should be finite and reasonable.
+- **Correctness test:** On GSM8K, single-chain SMC at β=1 with N=64 should outperform Best-of-N with N=64 (i.e., accuracy should be higher because SMC resamples mid-generation rather than only scoring complete solutions).
+
+### Stage 4: Multi-Chain Parallel Tempering (without Twists)
+
+**Goal:** Implement the full T-REX framework with K chains and inter-chain mixture proposals.
+
+**What to implement:**
+- K independent SMC chains with temperatures `β_1=0 < β_2 < … < β_K=1`.
+- Mixture proposal mechanism (Section 4): Bernoulli coin flip, local extension vs. hot injection.
+- Hot injection weight formula: `w_{t,inject}^{(i)} = R(x_{1:t}^{(i)})^{β_{k+1} - β_k}`.
+- Trajectory replacement: when injecting, replace the **entire** particle trajectory, not just the current token.
+- Cache management: after injection, update cached PRM scores.
 
-$$\alpha = \min \left(1, \left( \frac{\phi(x')}{\phi(x)} \right)^{\beta_{target}} \right)$$
+**Temperature schedule design:**
+- Start with `K=4` chains: `β = [0.0, 0.33, 0.67, 1.0]` (linear).
+- Also try geometric spacing: `β = [0.0, 0.1, 0.4, 1.0]` (more chains near β=0 for exploration).
+- The paper doesn't prescribe a specific schedule — this is a hyperparameter to tune.
 
-**Implication:** We achieve mathematically valid probabilistic inference without computing forward log-probabilities of the full sequence. The acceptance depends solely on the ratio of constraint satisfactions (the potential $\phi$).
+**Success criteria:**
+- **Communication verification:** Track injection events. Verify that some injected particles survive resampling in the cold chain (i.e., injection rate × survival rate > 0). If no injected particles ever survive, λ is too large or the temperature gap is too wide.
+- **Diversity improvement:** Measure the number of distinct final answers across particles in the cold chain. T-REX should produce more diverse valid solutions than single-chain SMC.
+- **Accuracy improvement:** On GSM8K and MATH500, the cold chain's accuracy (fraction of particles with correct answer) should be ≥ single-chain SMC at β=1.
+- **Asymptotic correctness:** As N → ∞, the cold chain's empirical distribution should approach the true posterior. Test by increasing N and checking that accuracy monotonically improves.
+
+### Stage 5: Normalizing Constant and Diagnostics
 
-## 4. T-REX Algorithm Lifecycle
-
-**Inputs:** Base LLM $p_\theta$, Critic $C_\omega$, Value Head $V_\gamma$.
-
-### Phase 1: Twisted SMC (Exploration)
-
-Run $K$ parallel chains. For each step $t$:
-
-- **Lookahead:** Estimate value $V_\gamma(x_{1:t})$.
-
-- **Propose:** Sample $x_{t+1} \sim \text{Softmax}(\log p_0 + \log V_\gamma)$.
-
-- **Resample:** Periodically duplicate high-value particles and prune low-value ones within the same temperature rung.
-
-### Phase 2: Non-Reversible Transport (Communication)
-
-At fixed intervals, attempt to promote a sample $x_{hot}$ from chain $k$ to chain $k+1$:
-
-- **Edit:** $x' \leftarrow \text{Editor}(x_{hot})$ (Mask & Infill).
-
-- **Swap/Promote:** Treat $x'$ as a candidate for chain $k+1$.
-
-- **Accept:** If $\phi(x')^{\beta_{k+1}} > U[0,1] \cdot \phi(x_{current})^{\beta_{k+1}}$, replace $x_{current}$ with $x'$.
-
-### Phase 3: Online Learning (Self-Distillation)
-
-We close the loop by training the auxiliary networks on the data generated by the search.
-
-- **Dataset:** $\mathcal{D} = \{ (x_{1:t}, y_t) \}$ where $y_t$ is the realized final reward $\phi(x_{1:T})$.
-
-- **Train Twist ($V_\gamma$):** Minimize MSE between predicted value and realized reward (Self-Distillation).
-
-$$\mathcal{L}_{Twist} = || V_\gamma(x_{1:t}) - \phi(x_{1:T}) ||^2$$
-
-- **Train Critic ($C_\omega$):** Maximize likelihood of masks that led to successful repairs.
-
-## 5. Implementation Architecture
-
-### 5.0 Repo Anchors (2026-02-02)
-
-- **SMC Core:** `trex/smc/particle_filter.py`, `trex/smc/resampling.py`
-- **Twisted SMC Core:** `trex/smc/twisted_smc.py` (weights + base class, tests in `trex/tests/test_smc/test_twisted_smc.py`)
-- **LLM Particle Filter:** `trex/smc/llm_particle_filter.py` (step-wise rollouts + PRM scoring)
-- **Tempering Primitives:** `trex/tempering/temperature_ladder.py` (betas + swap pairs), `trex/tempering/exchange.py` (replica exchange)
-- **Reward Model Wrapper:** `trex/models/reward_model.py` (PRM/ORM adapter)
-
-### 5.1. Model Components
-
-- **Base Model:** Frozen LLM (e.g., Qwen-2.5-7B (base)).
-
-- **Twist Head:** Linear(Hidden_Dim, 1). Output is scalar value (logit bias).
-
-- **Critic Head:** Linear(Hidden_Dim, 1). Output is token-level Bernoulli probability for masking.
-
-### 5.2. Verifiers ($\phi$)
-
-- **Math:** Python sandbox execution (for code-based math) or symbolic equality.
-
-- **Code:** Unit test pass rate (0.0 to 1.0).
-
-### 5.3. Compute Schedule
-
-- **Warming Up:** Initial generation uses low $\beta$ to maximize coverage.
-
-- **Cooling Down:** As $V_\gamma$ becomes accurate, we shift $\beta \to 1$ to rely more on the learned twist and less on random search.
-
-## 6. Proposed Experiments
-
-### 6.1 Benchmarks
-
-We focus on mathematical reasoning tasks where "lookahead" is critical:
-
-* **Mathematical Reasoning (GSM8K, MATH, MATH500):** Where an error in step 1 invalidates the final answer.
-
-* **HumanEval:** Programming tasks.
-
-* **GPQA, GPQA Diamond:** Science multiple choice questions.
-
-
-
-### 6.2 Baselines
-
-#### **Best-of-N brute force rejection sampling:** Defines the difficulty of the problem for the base model. Do a sweep of the first 100 problems at different temperatures [0.6, 0.8, 1.0, 1.2] before taking the best temperature and evaluating all problems at this temperature.
-
-#### **PPO and GRPO:** KL penalty $\beta=0.01 \dots 0.05$.
-
-#### **Standard SMC Steering:** Using a process reward model. Similar to Puri et al. 
-**Status:** ✅ Implemented in `trex/baselines/smc_steering_baseline.py` using `Qwen/Qwen2.5-Math-PRM-7B`.
-
-Baseline Implementation: Rollout Roulette (Puri et al., 2025) This baseline uses Sequential Monte Carlo (SMC) (specifically Particle Filtering) to perform "inference-time compute scaling." Instead of a single beam search or independent sampling, it maintains a population of partial solutions, scores them, and re-allocates compute to the most promising ones. Below is the precise algorithm and implementation details.
-
-##### 1. Core Components
-- **State Space:** The "particle" is a sequence of tokens. In the paper, the "step" size is typically a full thought step (e.g., a line of reasoning or a paragraph ending in a newline), rather than a single token.
-
-- **Population Size ($N$):** They use a fixed number of particles (e.g., $N=4$ to $N=16$ for efficiency comparisons, scaling up to larger numbers like 128 for max performance).
-
-- **Reward Model ($R$):** A Process Reward Model (PRM) or a Verifier that returns a scalar score $v \in [0, 1]$ for a partial sequence.
-
-##### 2. The Algorithm (Step-by-Step)
-
-Phase 1: Initialization
-
-Start with $N$ identical particles containing just the problem prompt $x$.
-$$S_0 = \{x^{(1)}, x^{(2)}, \dots, x^{(N)}\}$$ 
-Initialize weights $w^{(i)}_0 = 1/N$.
-
-Phase 2: The Loop (SMC)
-
-Repeat until all particles reach a terminal state (e.g., \boxed{answer} or max tokens).
-
-**1. Expansion (Rollout Step):** For each particle $x^{(i)}_{t-1}$, sample the next "step" using the base LLM $p_\theta$.
- * *Implementation Note:* Use stop strings for step boundaries, but exclude the stop token from output; rely on
-   `finish_reason` to detect termination and inject the next step header **after** scoring (to avoid contaminating PRM).
- $$x^{(i)}_t \sim p_\theta(\cdot | x^{(i)}_{t-1})$$
-
-**2. Weighting (Scoring):** Score the newly expanded particle using the Reward Model.
-$$w_t = w_{t-1} × PRM(step_t)$$
-(Crucially, they often use the raw PRM probability or a learned value estimate.)
-
-**3. Resampling (The "Roulette"):** This is the critical step. You select which particles survive to the next round based on their weights.
-* Normalize weights: $\tilde{w}^{(i)}_t = \frac{e^{w^{(i)}_t / \tau}}{\sum_j e^{w^{(j)}_t / \tau}}$ (Softmax with temperature $\tau$ is common, or just linear normalization).
-* Resampling Strategy: Sample $N$ indices from the distribution defined by $\tilde{w}$ (e.g., Systematic or Multinomial resampling). 
-* Replace the current population $S_t$ with the resampled population. High-scoring particles are duplicated; low-scoring ones are dropped.
-
-Phase 3: Final Selection
-
-Once all particles are finished, select the final answer.
-- **Majority Voting:** Most common final answer among the particles.
-- **Best-of-N:** The particle with the highest ORM score.
-
-#### **Twisted SMC (Ours, No Parallel Temperatures):** Learning the twist with a single swarm at one temperature. Tests the value of Parallel Exploration. Based on Feng et al.
-
-This method replaces standard LLM generation (or Beam Search) with a Twisted Sequential Monte Carlo (TSMC) sampler.
-
-The Core Idea: Instead of hoping the base model stumbles upon the right answer, we train a Value Function (Twist) that predicts whether a current partial reasoning trace will lead to a correct answer.
-
-**Implementation Status (2026-02-05):** Twisted SMC is now implemented end-to-end for the Mode-A (base-proposal) path.
-Core components are available in:
-- `trex/smc/twisted_smc.py` (twist weighting core)
-- `trex/models/value_head.py` + `trex/models/twist_model.py` (value/twist model path)
-- `trex/training/value_trainer.py` + `trex/training/train_value_head.py` (self-distillation training loop + CLI)
-- `trex/smc/tsmc_particle_filter.py` + `trex/baselines/tsmc_baseline.py` (TSMC inference runner)
-
-Current reproduction defaults:
-- `step_boundary_mode="delimiter"` with `step_delimiter="\n\n"`
-- `apply_chat_template=False` by default for TSMC/value-head training runs
-- `final_selection_mode="twist_weight"` (ORM remains optional)
-
-The Mechanism: This Value Function is used to bias the resampling step of a Particle Filter. We maintain a population of "thoughts." At every step (e.g., every newline), we kill off thoughts with low value estimates and clone thoughts with high value estimates.
-
-##### 1. System Components
-
-You need three specific modules to implement this:
-
-**A. The Base LLM ($p_\theta$)**
-
-- **Role:** The proposal generator. It generates the next few tokens (a "step") given the history.
-- **State:** Frozen (usually).
-- **Example:** Qwen-2.5-7B (base).
-
-**B. The Twist Function / Value Head ($\psi_\phi$)**
-
-- **Role:** A scalar regression head that estimates $V(s) = P(\text{correct} | s)$.
-- **Architecture:** A simple linear layer (Projector) attached to the final hidden state of the Base LLM.
-- **Input:** [Batch, Seq_Len, Hidden_Dim]
-- **Output:** [Batch, Seq_Len, 1] raw logits from the head; mapped to $\psi$ or $\log\psi$ in the twist wrapper depending on `twist_space`.
-- **Definition:** $\psi(x_{1:t}) \approx \mathbb{E}_{p_\theta}[R | x_{1:t}]$ where $R \in \{0, 1\}$.
-
-**C. The Verifier / Environment**
-
-- **Role:** Checks if the final answer is correct.
-
-- **Implementation:** A Python function that extracts \boxed{answer} and compares it to the ground truth.
-
-##### 2. The Training Phase (Learning the Twist)
-
-Feng et al. avoid expensive human labeling by using Outcome Supervision to synthesize a dataset. This is effectively "Monte Carlo Policy Evaluation."
-
-Algorithm: Iterative Twist Learning
-
-1. Data Collection (Rollouts)
-
-For a set of math prompts $x \in \mathcal{D}_{train}$:
-
-Sample $K$ full trajectories using the current policy (initially just the Base LLM).
-$$\tau^{(k)} \sim p_\theta(\cdot | x)$$
-Verify the final answer of each trajectory $\tau^{(k)}$.If correct: Assign Reward $R = 1$.
-If incorrect: Assign Reward $R = 0$.
-
-2. Label Assignment (The "Monte Carlo" Trick)
-Since we don't know which step caused the error, we assign the final reward to every step in the trajectory.
-Dataset $\mathcal{D}_{value} = \{ (x_{1:t}^{(k)}, R^{(k)}) \}$ for all steps $t$ in all trajectories $k$.
-
-3. Training Objective (MSE)
-
-Train the Value Head parameters $\phi$ to minimize the Mean Squared Error between the predicted twist and the realized reward.
-$$\mathcal{L}(\phi) = \frac{1}{|\mathcal{D}|} \sum_{(s, r) \in \mathcal{D}} || \psi_\phi(s) - r ||^2$$
-Note: It is crucial to re-collect data periodically. As the Twist improves, you use it to sample data (see Inference section), creating a virtuous cycle (Self-Improvement).
-
-##### 3. The Inference Phase (Twisted SMC)
-
-This is the runtime algorithm. It uses the learned Twist to steer generation.
-
-Hyperparameters:
-* $N$: Number of particles (e.g., 16).
-* $T$: Max number of reasoning steps (lines).
-
-Step-by-Step Logic
-
-Initialization:
-Create $N$ particles, all initialized to the prompt.$$S_0 = \{x^{(1)}, \dots, x^{(N)}\}$$
-Initialize weights $W_0^{(i)} = 1$.
-The Loop (for $t = 1$ to $T$):
-**1. Selection (Resampling):**
- * If $t > 0$, normalize the weights $W_{t-1}$.
- * Resample $N$ ancestors from the previous population $S_{t-1}$ proportional to weights $W_{t-1}$.
- * Effect: High-value particles are duplicated; low-value particles are dropped.
-
-**2. Mutation (Proposal):**
- * For each particle, generate the next "step" using the Base LLM $p_\theta$.
- * Implementation: Generate until the next \n token.
- $$x_t^{(i)} \sim p_\theta(\cdot | \tilde{x}_{t-1}^{(i)})$$
-
-**3. Weighting (Twisting):** Calculate the "incremental importance weight." 
-* In the optimal TSMC framework, the weight $w_t$ accounts for the change in the value function.
-$$w_t^{(i)} = \frac{\psi(x_{1:t}^{(i)})}{\psi(x_{1:t-1}^{(i)})}$$
-* Intuition: If the Twist value went up (0.5 $\to$ 0.9), this was a great step $\to$ High Weight. If it went down (0.5 $\to$ 0.1), this was a bad step $\to$ Low Weight.
-* Note: If using the Base LLM as the proposal, the likelihood ratio $p_\theta / p_\theta$ cancels out, leaving only the ratio of Twists.
-
-**4. Termination:** 
-* If a particle generates \boxed{} or typically finishes, mark it as done. At the end, pick the particle with the highest final Twist value $\psi(x_{1:T})$.
-
-* **Twisted SMC with self-distillation:** Compare against Kim et al. [2025].
-
-* **Replica Exchange SMC (Ours, No Twist Learning):** Parallel tempering without the learned proposal. Tests the value of the twisted proposal.
+**Goal:** Implement diagnostic tools to monitor algorithm health.
+
+**What to implement:**
+- **Per-chain ESS over time:** `ESS_t^k` for each chain `k` at each step `t`. Plot as heatmaps.
+- **Per-chain log Z estimate:** `log Z_hat^k = Σ_t log[(1/N) Σ_i w_t^{k,(i)}]`.
+- **Injection survival rate:** For each chain `k > 1`, track `(# injected particles that survive resampling) / (# injected particles)` per step.
+- **Particle genealogy:** Track ancestor indices through resampling to measure path degeneracy.
+- **Reward distribution per chain:** Histogram of `R(x_{1:t}^{k,(i)})` values at each step, per chain.
+
+**Success criteria:**
+- ESS never collapses to 1 for sustained periods (indicates weight degeneracy).
+- Injection survival rate is non-trivial (e.g., > 5% of injections survive in the adjacent colder chain).
+- Cold chain's reward distribution shifts rightward over steps (particles improve).
+- No NaN or Inf values in weights or log Z estimates.
+
+### Stage 6: Supervised Fine-Tuning (SFT) of Base Model
+
+**Goal:** Fine-tune the base model on step-by-step reasoning data so it can produce chain-of-thought solutions.
+
+**What to implement:**
+- Filter PRM800K dataset for high-quality step-by-step solutions (following Feng et al., 2025).
+- Standard SFT with cross-entropy loss on the filtered dataset.
+- Models: Qwen2.5-7B, Qwen2.5-14B, Qwen2.5-32B, LLaMA-3.1-8B.
+
+**Success criteria:**
+- After SFT, the base model can produce step-by-step solutions in the expected format.
+- Pass@1 accuracy on GSM8K improves over the pre-SFT base model.
+- The model's outputs are parseable by the PRM (i.e., the PRM can score intermediate steps).
+
+### Stage 7: Experimental Evaluation
+
+**Goal:** Run the full experimental comparison.
+
+**Benchmarks:**
+- **GSM8K**: Grade-school math (8.5K problems). Primary benchmark.
+- **MATH500**: 500 harder math problems. Secondary benchmark.
+- **Optional extensions:** AMC/AIME (competition math), HumanEval (code), GPQA Diamond (science).
+
+**Baselines to implement:**
+1. **Best-of-N rejection sampling:** Generate N complete solutions, pick the one with highest reward. Test at temperatures `{0.6, 0.8, 1.0, 1.2}`. Sweep on first 100 problems, then fix temperature.
+2. **PPO / GRPO:** Fine-tune with KL penalty `β ∈ {0.01, 0.02, 0.05}` against the SFT model.
+3. **Standard SMC with PRM** (Puri et al., 2025): Single chain, β=1, no tempering.
+4. **Twisted SMC** (Feng et al., 2025): Uses learned twist/value function for reweighting only (not in proposal).
+5. **Multi-temperature SMC without communication:** K chains at different β, but no mixture proposals (λ=0). Tests the value of inter-chain communication.
+
+**Experimental protocol:**
+- Use **stratified sampling** to reduce variance: partition benchmark by difficulty, sample proportionally.
+- Report: accuracy (% problems solved), sample efficiency (accuracy vs. N), wall-clock time.
+- For each method, sweep N ∈ {16, 32, 64, 128, 256}.
+
+**Success criteria:**
+- T-REX at N=64 should match or exceed Best-of-N at N=256 on GSM8K (4× sample efficiency).
+- T-REX should outperform standard SMC (Puri et al.) at equal N on both GSM8K and MATH500.
+- T-REX should produce more diverse correct solutions than GRPO (measured by distinct final answers among correct particles).
+- Multi-temperature SMC with communication (T-REX) should outperform multi-temperature SMC without communication (baseline 5), validating the mixture proposal mechanism.
+
+---
+
+## 7. Key Implementation Details
+
+### 7.1 Numerical Stability
+
+All weight computations should be done in **log space**:
+
+```python
+log_w_local = beta_k * (log_R_curr - log_R_prev)
+log_w_inject = (beta_k1 - beta_k) * log_R_curr
+```
+
+For resampling, convert to normalized probabilities:
+```python
+log_W = log_w - logsumexp(log_w)  # normalized log weights
+W = exp(log_W)                     # normalized weights for resampling
+```
+
+For the normalizing constant estimate, accumulate in log space:
+```python
+log_Z += logsumexp(log_w) - log(N)  # at each step t
+```
+
+### 7.2 PRM Score Caching
+
+Each particle stores its current PRM score `R(x_{1:t})`. After resampling, the surviving particle inherits the ancestor's cached score. After propagation, the PRM is called **once per particle per step** on the extended sequence. After hot injection, the injected particle carries the hot chain's cached PRM score (no recomputation needed since the trajectory is identical).
+
+### 7.3 KV-Cache Management
+
+Each particle has its own KV-cache for the base LLM. After resampling:
+- Surviving particles: copy the ancestor's KV-cache.
+- Eliminated particles: discard their KV-cache.
+- After hot injection: the injected particle needs the hot chain's KV-cache for the injected trajectory. Either copy it or recompute from scratch.
+
+This is the **primary memory bottleneck**. For N particles × K chains, we need `N × K` KV-caches. Strategies:
+- Use KV-cache compression or quantization.
+- Recompute KV-caches from sequences rather than storing all of them (trades compute for memory).
+- Use PagedAttention (vLLM-style) for efficient KV-cache management.
+
+### 7.4 Systematic Resampling
+
+```python
+def systematic_resample(weights, N):
+    """
+    Args:
+        weights: normalized weights, shape (N,), sum to 1
+        N: number of particles
+    Returns:
+        ancestors: array of ancestor indices, shape (N,)
+    """
+    positions = (np.arange(N) + np.random.uniform()) / N
+    cumsum = np.cumsum(weights)
+    ancestors = np.searchsorted(cumsum, positions)
+    return ancestors
+```
+
+### 7.5 Effective Sample Size
+
+```python
+def compute_ess(log_weights):
+    """
+    Args:
+        log_weights: unnormalized log weights, shape (N,)
+    Returns:
+        ESS: effective sample size, float in [1, N]
+    """
+    log_W = log_weights - logsumexp(log_weights)
+    return np.exp(-logsumexp(2 * log_W))
+```
+
+### 7.6 Handling End-of-Sequence
+
+When a particle generates an EOS token before step T:
+- Freeze the particle: do not propagate further. Its PRM score remains fixed.
+- Its incremental weight at all subsequent steps is 1.0 (since `R(x_{1:t}) / R(x_{1:t-1}) = 1` when the sequence is unchanged).
+- It still participates in resampling and can be eliminated or duplicated.
+
+### 7.7 Stratified Sampling for Evaluation
+
+Partition the benchmark into difficulty buckets (e.g., by number of reasoning steps required or by historical solve rate). Sample problems proportionally from each bucket. Report per-bucket accuracy to understand where T-REX helps most (expected: hard problems with narrow passages).
+
+---
+
+## 8. Hyperparameter Summary
+
+| Parameter | Default | Range to Sweep | Notes |
+|---|---|---|---|
+| N (particles) | 64 | {16, 32, 64, 128, 256} | Primary compute knob |
+| K (chains) | 4 | {2, 3, 4, 6} | More chains = more exploration but more compute |
+| β schedule | Linear [0, 0.33, 0.67, 1] | Linear, geometric, learned | Start with linear |
+| λ (mix weight) | 0.1 | {0.05, 0.1, 0.2, 0.3} | Too high → cold chain is flooded with hot noise |
+| ESS threshold | N/2 | {N/4, N/3, N/2} | Lower = less resampling, more weight variance |
+| PRM granularity | Per reasoning step | Per token, per step, per sentence | Coarser = cheaper but less precise |
+| Temperature for base LLM | 1.0 | {0.8, 1.0, 1.2} | Applied inside P_θ before SMC |
+
+---
+
+## 9. Data Flow Diagram
+
+```
+Step t:
+
+Chain 1 (β=0, hot)     Chain 2 (β=0.33)      Chain 3 (β=0.67)      Chain 4 (β=1, cold)
+─────────────────       ─────────────────      ─────────────────      ─────────────────
+│ Propagate (LLM) │     │ Propagate (LLM) │    │ Propagate (LLM) │    │ Propagate (LLM) │
+│ Reweight (β=0)  │     │ Reweight (β=.33)│    │ Reweight (β=.67)│    │ Reweight (β=1)  │
+│ [weights = 1]   │     │                 │    │                 │    │                 │
+└────────┬────────┘     └────────┬────────┘    └────────┬────────┘    └────────┬────────┘
+         │                       │                      │                      │
+         │──── λ inject ────────>│                      │                      │
+         │                       │──── λ inject ───────>│                      │
+         │                       │                      │──── λ inject ───────>│
+         │                       │                      │                      │
+         │                       │ Reweight injected    │ Reweight injected    │ Reweight injected
+         │                       │ w = R^{Δβ}           │ w = R^{Δβ}           │ w = R^{Δβ}
+         │                       │                      │                      │
+         v                       v                      v                      v
+│ Resample (ESS)  │     │ Resample (ESS)  │    │ Resample (ESS)  │    │ Resample (ESS)  │
+─────────────────       ─────────────────      ─────────────────      ─────────────────
+
+                                                                      ↓ (at step T)
+                                                                   OUTPUT: cold chain
+                                                                   particles + weights
+```
+
+---
+
+## 10. Expected Computational Cost
+
+Per step `t`, per chain `k`:
+- **LLM forward passes:** `N` (one per particle for propagation). This is the dominant cost.
+- **PRM evaluations:** `N` (one per particle).
+- **Resampling:** `O(N)` (negligible).
+- **Injection:** `O(λN)` additional bookkeeping (negligible).
+
+**Total per step:** `K × N` LLM forward passes + `K × N` PRM evaluations.
+**Total for full generation:** `T × K × N` LLM forward passes.
+
+**Comparison to Best-of-N:** Best-of-N with `M` samples requires `T × M` LLM forward passes (no PRM during generation). T-REX with equivalent total compute uses `M = K × N` effective forward passes per step but gets the benefit of mid-generation resampling and inter-chain communication.
