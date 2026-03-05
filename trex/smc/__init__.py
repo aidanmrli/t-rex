@@ -4,7 +4,8 @@ SMC (Sequential Monte Carlo) module for T-REX.
 This module provides core SMC functionality including:
 - resampling: Resampling algorithms (multinomial, systematic, stratified)
 - particle_filter: ParticleFilter class for managing particles and weights
-- twisted_smc: Twisted SMC with value-function guided sampling
+- single_chain_smc: Stage 3 single-chain SMC core
+- multi_chain_smc: Stage 4 multi-chain SMC core
 """
 
 from trex.smc.resampling import (
@@ -19,13 +20,9 @@ from trex.smc.particle_filter import (
     Particle,
     ParticleFilter,
 )
-from trex.smc.twisted_smc import (
-    compute_twisted_weights,
-    TwistedSMCConfig,
-    TwistedSMC,
-)
 from trex.smc.llm_particle_filter import LLMParticleFilter
-from trex.smc.tsmc_particle_filter import TSMCLLMParticleFilter
+from trex.smc.single_chain_smc import SingleChainSMC, StepResult
+from trex.smc.multi_chain_smc import MultiChainSMC, MultiChainSMCConfig, MultiChainSMCResult
 
 __all__ = [
     # Resampling
@@ -38,12 +35,12 @@ __all__ = [
     "SMCConfig",
     "Particle",
     "ParticleFilter",
-    # Twisted SMC
-    "compute_twisted_weights",
-    "TwistedSMCConfig",
-    "TwistedSMC",
     # LLM Particle Filter
     "LLMParticleFilter",
-    "TSMCLLMParticleFilter",
+    # Stage 3/4 Core
+    "StepResult",
+    "SingleChainSMC",
+    "MultiChainSMCConfig",
+    "MultiChainSMCResult",
+    "MultiChainSMC",
 ]
-

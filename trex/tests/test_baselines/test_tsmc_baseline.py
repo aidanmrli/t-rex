@@ -1,4 +1,4 @@
-"""Unit tests for TSMC baseline config loading."""
+"""Archival tests for obsolete TSMC baseline/value-head entry points."""
 
 import argparse
 import sys
@@ -8,32 +8,37 @@ import pytest
 
 sys.modules.setdefault("jsonlines", ModuleType("jsonlines"))
 
-from trex.baselines.tsmc_baseline import load_config
+import trex.models as models
+from trex.baselines.tsmc_baseline import TSMCBaseline, load_config
+from trex.baselines.tsmc_config import TSMCConfig
 
 
 def _base_args() -> argparse.Namespace:
-    return argparse.Namespace(
-        config=None,
-        output_dir=None,
-        dataset_path=None,
-        generator_model_path=None,
-        value_model_path=None,
-        value_head_path=None,
-        value_head_type=None,
-        twist_space=None,
-        twist_mode=None,
-        n_particles=None,
-        max_smc_iterations=None,
-        resampling_unit=None,
-        resample_every_tokens=None,
-        temperature=None,
-    )
+    return argparse.Namespace(config=None)
 
 
-def test_load_config_revalidates_cli_overrides():
-    """Invalid CLI overrides should fail validation."""
-    args = _base_args()
-    args.twist_space = "invalid"
+def test_tsmc_config_instantiation_raises_archival_error():
+    """TSMC config is archived and should not be instantiated."""
+    with pytest.raises(RuntimeError, match="archived"):
+        TSMCConfig()
 
-    with pytest.raises(ValueError, match="twist_space"):
-        load_config(args)
+
+def test_load_config_raises_archival_error():
+    """TSMC baseline config loader should fail fast for archived baseline."""
+    with pytest.raises(RuntimeError, match="archived"):
+        load_config(_base_args())
+
+
+def test_tsmc_baseline_construction_raises_archival_error():
+    """TSMC baseline runner is archived and should not construct."""
+    with pytest.raises(RuntimeError, match="archived"):
+        TSMCBaseline(config=None)
+
+
+def test_models_package_no_longer_exports_twist_or_value_head_symbols():
+    """`trex.models` should stop exporting obsolete twist/value-head symbols."""
+    assert not hasattr(models, "TwistModel")
+    assert not hasattr(models, "ValueHead")
+    assert not hasattr(models, "LinearValueHead")
+    assert not hasattr(models, "MLPValueHead")
+    assert not hasattr(models, "AttentionPooledValueHead")
