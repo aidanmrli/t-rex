@@ -222,9 +222,11 @@ PRM evaluation, ESS computation, resampling, and cross-temperature communication
 
 Particle survival reflects the quality of coherent partial derivations rather than token-level formatting noise.
 
-### 4.4 Major implementation implication
+### 4.4 Blockization is determined by SFT data conventions
 
-The method does **not** define the blockization policy. This is left to implementation. Therefore the state space itself is an open design variable and must be treated as a first-class research and engineering component.
+A block is a reasoning step. The block boundary — the delimiter that signals the end of a reasoning step — is defined by the conventions of the SFT training data used to fine-tune the base model. After SFT, the model learns to emit these delimiters naturally, so the blockizer simply detects the delimiter pattern that the SFT data established.
+
+This means blockization is **not** an independent open design variable. It is resolved by the choice of SFT dataset and the reasoning step structure therein. The blockizer implementation must match the SFT data's delimiter conventions exactly.
 
 ---
 
@@ -640,7 +642,7 @@ Recommended implementation pattern:
 
 ### 12.4 Training-time and test-time blockization must match
 
-Because reward is defined on completed block boundaries, PRM data must use the same blockization scheme deployed during inference. Segmentation mismatch is a direct calibration failure mode.
+Because reward is defined on completed block boundaries, PRM data must use the same block structure — i.e., the reasoning step delimiter from the SFT training data — as deployed during inference. The PRM must be trained on outputs from the SFT'd model, not the raw base model. Segmentation mismatch is a direct calibration failure mode.
 
 ---
 
@@ -765,11 +767,13 @@ An implementation faithful to the proposal needs at least the following componen
 ## 15.1 Blockizer
 Responsible for:
 
-- defining semantic boundaries,
-- deciding when a block terminates,
+- detecting the reasoning step delimiter established by the SFT training data,
+- deciding when a block terminates (i.e., when the delimiter pattern is emitted),
 - serializing blocks,
 - handling EOS / final answer blocks,
 - ensuring deterministic reconstruction from token streams.
+
+The blockizer does not define block boundaries independently. It detects the delimiter pattern that the SFT'd model has learned to emit at reasoning step boundaries.
 
 ## 15.2 Base block sampler
 Responsible for:
@@ -778,6 +782,20 @@ Responsible for:
 - managing stopping rules for block generation,
 - exposing token logprobs if needed,
 - maintaining KV-cache state for many particles.
+
+### 15.2.1 Base model SFT: foundational requirement
+
+The entire SMC framework is shaped by the base model prior \(P_\theta\). If \(P_\theta\) assigns negligible mass to correct proof-style reasoning, the posterior \(\pi\) requires extreme importance-weight corrections that are impractical at finite \(N\). SFT on high-quality proof data is **required** to shift \(P_\theta\) toward the target reasoning style before any SMC inference is meaningful.
+
+The SFT dataset for this purpose is **FineProofs-SFT** ([lm-provers/FineProofs-SFT](https://huggingface.co/datasets/lm-provers/FineProofs-SFT)):
+
+- 7,777 samples (4,300 unique problems) from olympiad competitions and Art of Problem Solving.
+- Includes chain-of-thought reasoning traces and formal proofs.
+- Covers algebra, combinatorics, number theory, geometry, and inequalities.
+- Provides expert quality grades (0–7 scale) and reward scores suitable for curriculum-based SFT.
+- Decontaminated against standard proof benchmarks (IMOProofBench, ProofBench).
+
+The SFT'd model replaces the raw base model as \(P_\theta\) in all subsequent SMC stages.
 
 ## 15.3 Prefix reward model
 Responsible for:
@@ -829,7 +847,7 @@ Responsible for:
 
 The methodology is mathematically coherent, but several implementation details are intentionally left open.
 
-1. Exact blockization policy.
+1. ~~Exact blockization policy.~~ Resolved: blockization is determined by the SFT data's reasoning step delimiter conventions (see Section 4.4).
 2. Exact block-sampling mechanism from the base model.
 3. Output selection rule at the end of inference.
 4. Hyperparameter defaults for \(K\), \(N\), \(\lambda\), ESS threshold, and max depth.
@@ -893,10 +911,12 @@ This sketch should not be treated as the full implementation specification; it o
 ## 18. Recommended reading order for implementers
 
 1. Read the posterior definition and absorbing-state embedding.
-2. Implement plain blockwise SMC first.
-3. Add temperature ladder support without communication.
-4. Add hot-bank communication and branch-specific weighting.
-5. Only after the core sampler is stable, consider amortized twist learning.
+2. SFT the base model on proof data (FineProofs-SFT). Identify the reasoning step delimiter from the SFT data — this defines block boundaries.
+3. Build the blockizer around the SFT-derived delimiter.
+4. Implement plain blockwise SMC.
+5. Add temperature ladder support without communication.
+6. Add hot-bank communication and branch-specific weighting.
+7. Only after the core sampler is stable, consider amortized twist learning.
 
 ---
 
@@ -913,8 +933,9 @@ The core method can be summarized as follows:
 
 The method is strongest when the repository treats the following as first-class systems:
 
-- blockization,
-- PRM calibration,
+- base model SFT (which determines both prior quality and block structure),
+- blockization (derived from SFT data delimiter conventions),
+- PRM calibration (trained on SFT'd model outputs),
 - exact branch-aware importance weighting,
 - bank management,
 - and stable particle systems engineering.

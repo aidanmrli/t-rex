@@ -202,6 +202,47 @@ These should be documented before implementation, even if they are unresolved.
 
 ---
 
+## 4.4 Required pre-stage: base model SFT for proof-writing and block structure
+
+SFT on proof data is a **foundational requirement**, not an optional enhancement. It serves two purposes:
+
+1. **Improving the base model prior.** The quality of \(P_\theta\) directly determines particle efficiency. A raw base model that rarely produces structured proofs makes the SMC sampler impractical regardless of other components.
+
+2. **Defining the block structure.** A block is a reasoning step. The SFT training data's conventions for delimiting reasoning steps determine what a block boundary looks like. After SFT, the model learns to emit these delimiters naturally, so the blockizer simply detects the pattern the SFT data established. This resolves the blockization question — it is not an independent design variable.
+
+**Dataset: FineProofs-SFT** ([lm-provers/FineProofs-SFT](https://huggingface.co/datasets/lm-provers/FineProofs-SFT))
+
+- 7,777 samples (4,300 unique problems) of olympiad-level mathematical proofs.
+- Includes chain-of-thought reasoning traces (`reasoning_content`) and formal proofs.
+- Covers algebra, combinatorics, number theory, geometry, inequalities (168 categories).
+- Sources: IMO, APMO, USAMO, regional olympiads, Art of Problem Solving.
+- Expert quality grades (0–7 from Gemini-3-Pro) and reward scores (Qwen3-4B-Thinking) enable curriculum-based SFT (train on easier/higher-quality examples first).
+- Apache 2.0 license. Decontaminated against IMOProofBench and ProofBench.
+- Paper: [arXiv:2511.01846](https://arxiv.org/abs/2511.01846).
+
+**Implementation notes:**
+
+1. SFT should target the Qwen3.5 base models specified in project guidelines (0.8B, 2B, 4B, 9B).
+2. Use the `messages` field which preserves `<think>` tags for reasoning traces.
+3. The expert grades enable quality-filtered SFT (e.g., train only on grade >= 4) or curriculum learning (ascending grade order).
+4. **Identify the reasoning step delimiter pattern** from the SFT data. This pattern becomes the block boundary definition used by the blockizer in all subsequent stages.
+5. The SFT'd model becomes the new \(P_\theta\) for all subsequent SMC stages.
+6. The PRM (Stage 2) must be trained/evaluated on outputs from the SFT'd model, not the raw base model.
+
+**Research questions:**
+
+1. What delimiter pattern does the SFT data use to end reasoning steps? (This directly determines the blockizer implementation.)
+2. How much does SFT improve single-chain SMC particle efficiency?
+3. Does quality-filtered SFT (high-grade only) outperform training on all samples?
+4. At what model scale does SFT on 4,300 problems yield diminishing returns?
+
+**Exit criteria:**
+- SFT'd model reliably emits structured reasoning steps with identifiable delimiters.
+- The delimiter pattern is documented and the blockizer implementation matches it.
+- SFT'd model generates well-structured proof-style reasoning more frequently than the raw base model on a held-out problem set.
+
+---
+
 ## 5. Stage 1: Plain blockwise SMC with one chain
 
 This is the minimum scientifically meaningful implementation.
@@ -230,22 +271,16 @@ Without a strong single-chain baseline, multi-temperature communication cannot b
 ## 5.3 Components to build
 
 ### 5.3.1 Blockizer v1
-A first-pass blockization strategy is needed even if imperfect.
+The blockizer detects the reasoning step delimiter pattern established by the SFT training data (see Section 4.4). A block ends when the model emits the delimiter that signals the conclusion of a reasoning step.
 
-Recommended initial design:
+Implementation requirements:
 
-- choose one explicit block delimiter policy,
-- make it deterministic,
-- make it reversible,
-- and expose instrumentation for boundary diagnostics.
+- detect the SFT-derived delimiter deterministically,
+- make boundary detection reversible (reconstruct full text from block list),
+- expose instrumentation for boundary diagnostics,
+- handle edge cases: EOS before delimiter, max-length truncation, malformed output.
 
-Suggested v1 options to evaluate:
-
-1. newline-terminated reasoning steps,
-2. delimiter-token terminated blocks,
-3. parser-assisted equation or code block boundaries.
-
-For v1, prefer the simplest scheme that is deterministic and debuggable.
+The delimiter pattern must be identified from the FineProofs-SFT dataset before this component is built.
 
 ### 5.3.2 Base-model block sampler
 Implement a function:
@@ -314,19 +349,16 @@ At every depth:
 
 ## 5.6 Research questions in Stage 1
 
-1. **Which blockization policy is stable enough for sequential weighting?**  
-   This is the biggest unresolved issue.
-
-2. **How noisy are reward increments?**  
+1. **How noisy are reward increments?**
    Measure the distribution of \(\Delta \ell_m\).
 
-3. **How aggressively should increments be clipped or normalized?**  
+2. **How aggressively should increments be clipped or normalized?**
    This may be necessary for stability but changes effective behavior.
 
-4. **What resampling threshold works best?**  
+3. **What resampling threshold works best?**
    The methodology leaves ESS threshold open.
 
-5. **How should final outputs be selected?**  
+4. **How should final outputs be selected?**
    Options:
    - posterior sample,
    - max-weight completed trajectory,
@@ -334,6 +366,8 @@ At every depth:
    - best PRM score among completed trajectories.
 
 This choice should be explicitly documented and benchmarked.
+
+Note: blockization is no longer an open question here — it is determined by the SFT data delimiter conventions (see Section 4.4).
 
 ## 5.7 Exit criteria
 
@@ -359,11 +393,11 @@ Improve the PRM so it is usable for sequential weighting rather than only rankin
 ### 6.2.1 PRM data pipeline
 Construct training examples from:
 
-- ancestral samples from the base model,
+- ancestral samples from the **SFT'd** base model (not the raw base model),
 - teacher-forced or curated demonstrations,
 - trajectories discovered by search or SMC.
 
-Each example must preserve block boundaries consistent with inference.
+Each example must preserve the SFT-derived block boundaries (reasoning step delimiters) consistent with inference. The PRM must be trained on the same block structure the SFT'd model produces.
 
 ### 6.2.2 Labeling pipeline
 Support multiple label targets:
@@ -684,23 +718,21 @@ Stage 6 is complete when the learned proposal provides measurable speed/quality 
 
 These are not single-stage tasks. They cut across the whole project.
 
-## 11.1 Blockization research agenda
+## 11.1 Blockization
 
-This is likely the single most important unresolved issue.
+Blockization is resolved by the SFT data conventions: a block is a reasoning step, and the block boundary is the delimiter pattern the SFT data uses to end a reasoning step. The model learns to emit this delimiter through SFT, and the blockizer detects it.
 
-Questions:
+Remaining questions (not about choosing a blockization scheme, but about validating the SFT-derived one):
 
-- What block boundary definition best aligns with PRM stability?
-- Should boundaries depend on task type?
-- Can a learned boundary detector outperform hand-crafted delimiters?
-- How much does block length variance affect ESS and resampling?
-- How are code blocks, math equations, and prose reasoning handled consistently?
+- How much does block length variance (under the SFT-derived delimiter) affect ESS and resampling?
+- Does the SFT-derived delimiter remain stable across problem domains (algebra vs geometry vs combinatorics)?
+- How does the PRM's reward increment noise relate to the granularity of reasoning steps in the SFT data?
 
 Experiments:
 
-- compare several blockization schemes on the same model and PRM,
-- measure reward increment variance and final correctness,
-- quantify boundary jitter sensitivity.
+- measure block length distribution from SFT'd model outputs across problem types,
+- measure reward increment variance per block under the SFT-derived boundaries,
+- verify delimiter emission reliability at different model scales.
 
 ## 11.2 Reward design and calibration
 
@@ -748,7 +780,26 @@ Experiments:
 - benchmark PRM batch size versus latency,
 - benchmark prefix deduplication strategies.
 
-## 11.5 Output selection and deployment semantics
+## 11.5 Base model SFT quality and its downstream effects
+
+SFT is foundational — not a tuning knob. The SFT'd model is the \(P_\theta\) for all SMC stages, and the SFT data's delimiter conventions define block boundaries.
+
+Questions:
+
+- What quality threshold (expert grade cutoff) maximizes downstream SMC performance?
+- Does curriculum SFT (ascending difficulty/grade) outperform uniform SFT?
+- How does SFT interact with PRM calibration — the PRM must be trained on SFT'd model outputs?
+- At what model scale (0.8B vs 2B vs 4B vs 9B) does proof-targeted SFT have the most impact?
+- How reliably does the SFT'd model emit the reasoning step delimiter across different problem types?
+
+Experiments:
+
+- compare raw base model vs SFT'd model on pass@k for olympiad problems,
+- compare reward increment variance under both models,
+- measure ESS stability and resampling frequency with and without SFT,
+- measure delimiter emission reliability across model scales.
+
+## 11.6 Output selection and deployment semantics
 
 Questions:
 
@@ -774,15 +825,15 @@ Mitigation:
 - clip unstable increments,
 - monitor reward-increment distributions continuously.
 
-## 12.2 Risk: blockization is unstable
+## 12.2 Risk: SFT-derived block boundaries are unstable
 
-Poor block boundaries create noisy rewards and brittle depth alignment.
+If the SFT'd model does not reliably emit the reasoning step delimiter, block boundaries become noisy, creating noisy rewards and brittle depth alignment.
 
 Mitigation:
 
-- treat blockization as its own module and experimental axis,
+- verify delimiter emission reliability on held-out problems before building the SMC pipeline,
 - log every boundary decision,
-- compare at least two simple policies before scaling up.
+- if the delimiter is unreliable at small model scales, prioritize SFT on larger models first.
 
 ## 12.3 Risk: compute explosion
 
@@ -846,12 +897,13 @@ The following actions should be executed first in the repository.
 
 1. Write the core interfaces for prefixes, particles, chains, banks, and PRM scoring.
 2. Choose and document a **v1 blockization policy**.
-3. Implement single-chain blockwise SMC.
-4. Add metrics and trace logging from day one.
-5. Build a tiny deterministic benchmark slice for debugging.
-6. Measure reward-increment statistics before adding any multi-chain complexity.
-7. Add temperature support only after Stage 1 is stable.
-8. Add hot-bank communication only after Stage 3 is stable.
+3. Evaluate FineProofs-SFT for base model SFT (see Section 4.4) — run initial SFT on Qwen3.5-0.8B to assess proof-writing quality improvement before committing to larger-scale training.
+4. Implement single-chain blockwise SMC.
+5. Add metrics and trace logging from day one.
+6. Build a tiny deterministic benchmark slice for debugging.
+7. Measure reward-increment statistics before adding any multi-chain complexity.
+8. Add temperature support only after Stage 1 is stable.
+9. Add hot-bank communication only after Stage 3 is stable.
 
 ---
 
@@ -873,20 +925,21 @@ A first serious release of the repository should satisfy all of the following:
 
 The right build order is:
 
-1. define the state space,
-2. implement plain blockwise SMC,
-3. stabilize the PRM,
-4. add temperatures,
-5. add hot-bank injection,
-6. evaluate rigorously,
-7. only then amortize with learned proposals.
+1. SFT the base model on FineProofs-SFT and identify the reasoning step delimiter,
+2. build the blockizer around the SFT-derived delimiter,
+3. implement plain blockwise SMC,
+4. stabilize the PRM (trained on SFT'd model outputs),
+5. add temperatures,
+6. add hot-bank injection,
+7. evaluate rigorously,
+8. only then amortize with learned proposals.
 
-The main unresolved scientific questions are:
+The main scientific questions are:
 
-- how to define blocks,
-- how to train and calibrate the PRM,
+- how to train and calibrate the PRM on SFT-derived block boundaries,
 - how to space temperatures,
 - how aggressively to inject hot prefixes,
-- and how to manage compute and memory at scale.
+- how to manage compute and memory at scale,
+- and at what model scale SFT yields reliable delimiter emission and proof quality.
 
 Those questions should be treated as explicit research tasks, not hidden assumptions.

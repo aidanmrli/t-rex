@@ -25,6 +25,7 @@ The very first goal should be to update these documents before literally anythin
 - If you need an interactive session to quickly test that something works, try using `salloc` to get a node of 4 H100 GPUs on the short-unkillable partition. If this partition does not exist, you are not on the Mila cluster and can ignore this. Update this bullet point once you have found a working salloc command.
 - DO NOT run any programs on the login node; you MUST ALWAYS check if you have GPU access before running any Python code.
 - Experiments should be done with HuggingFace Qwen3.5-0.8B-Base, Qwen3.5-2B-Base, Qwen3.5-4B-Base, Qwen3.5-9B-Base, and potentially Qwen3.5-35B-A3B-Base. See this url: [https://huggingface.co/collections/Qwen/qwen35]
+- **SFT dataset (required)**: [lm-provers/FineProofs-SFT](https://huggingface.co/datasets/lm-provers/FineProofs-SFT) — 7,777 olympiad-level proof samples with expert quality grades. SFT on this dataset is a foundational requirement: it improves the base model prior AND its reasoning step delimiter conventions define block boundaries for the SMC system. See `docs/plans/trex_implementation_plan_20260317.md` Section 4.4 for details.
 - After running any experiment, update `docs/EXPERIMENTS.md` immediately.
 - Order of content for update: (1) results/metrics, (2) interpretation in the experiment context.
 - Explicitly record: what command was run, whether anything went wrong (bugs, invalid runs, anomalies), and what the results imply for the project's next steps.
